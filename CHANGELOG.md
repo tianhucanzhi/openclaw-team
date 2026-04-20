@@ -6,9 +6,15 @@ Docs: https://docs.openclaw.ai
 
 ### Changes
 
-- Control UI/agents: add a **Team** tab to create and remove gateway agents (isolated workspace, agent dir, and sessions) using `agents.create` / `agents.delete`; channel routing still uses config bindings.
+- Add optional `ui_admin` package: local admin UI + API to manage per-employee gateway ports, persist credentials under `ui_admin/data/`, and spawn `openclaw gateway` with isolated `OPENCLAW_STATE_DIR` / `OPENCLAW_CONFIG_PATH` (default admin login `admin` / `admin1234`; override via env).
+- `ui_admin`: per-employee gateway Control UI token (`gateway.auth`) is generated on create, shown in the admin table, and can be rotated with **新 Token** (rewrites `openclaw.json` and restarts the gateway when it was running).
+- `ui_admin`: restyled login screen and post-login shell with a left sidebar (**员工管理** hosts the existing employee/gateway table).
+- `ui_admin`: drop the unused per-employee password field when creating staff; gateway access uses the generated **gateway token** only.
+- Control UI: add a **Team** sidebar entry (Settings, above Debug) to create and remove gateway agents (isolated workspace, agent dir, and sessions) via `agents.create` / `agents.delete`; channel routing still uses config bindings.
 
 ### Fixes
+
+- `ui_admin` dev runner: resolve Vite from the workspace root when `ui_admin/node_modules` is absent (pnpm hoisting).
 
 ## 2026.4.11
 

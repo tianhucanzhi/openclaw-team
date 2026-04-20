@@ -1,6 +1,7 @@
 packages:
   - .
   - ui
+  - ui_admin
   - packages/*
   - extensions/*
 

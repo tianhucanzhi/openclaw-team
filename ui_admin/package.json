@@ -1,0 +1,17 @@
+{
+  "name": "openclaw-ui-admin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ./scripts/dev.mjs",
+    "server": "node ./server/index.mjs",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lit": "^3.3.2"
+  },
+  "devDependencies": {
+    "vite": "8.0.8"
+  }
+}

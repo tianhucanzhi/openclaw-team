@@ -133,6 +133,7 @@ import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderLoginGate } from "./views/login-gate.ts";
 import { renderOverview } from "./views/overview.ts";
+import { renderAgentsTeamPanel } from "./views/agents-panels-team.ts";
 
 // Lazy-loaded view modules – deferred so the initial bundle stays small.
 // Each loader resolves once; subsequent calls return the cached module.
@@ -779,8 +780,6 @@ export function renderApp(state: AppViewState) {
       return;
     }
     switch (state.agentsPanel) {
-      case "team":
-        return;
       case "files":
         void loadAgentFiles(state, agentId);
         return;
@@ -1463,9 +1462,6 @@ export function renderApp(state: AppViewState) {
                 },
                 onSelectPanel: (panel) => {
                   state.agentsPanel = panel;
-                  if (panel === "team") {
-                    state.teamAgentError = null;
-                  }
                   if (
                     panel === "files" &&
                     resolvedAgentId &&
@@ -1699,31 +1695,6 @@ export function renderApp(state: AppViewState) {
                   }
                   updateConfigFormValue(state, ["agents", "defaultId"], agentId);
                 },
-                team: {
-                  busy: state.teamAgentBusy,
-                  error: state.teamAgentError,
-                  deleteBusyAgentId: state.teamDeleteBusyAgentId,
-                  draftName: state.teamDraftName,
-                  draftWorkspace: state.teamDraftWorkspace,
-                  draftModel: state.teamDraftModel,
-                },
-                onTeamDraftChange: (patch) => {
-                  if (typeof patch.name === "string") {
-                    state.teamDraftName = patch.name;
-                  }
-                  if (typeof patch.workspace === "string") {
-                    state.teamDraftWorkspace = patch.workspace;
-                  }
-                  if (typeof patch.model === "string") {
-                    state.teamDraftModel = patch.model;
-                  }
-                },
-                onTeamProvision: () => {
-                  void provisionTeamAgent(state);
-                },
-                onTeamDelete: (agentId) => {
-                  void deleteTeamAgent(state, agentId);
-                },
               }),
             )
           : nothing}
@@ -1956,6 +1927,38 @@ export function renderApp(state: AppViewState) {
             })
           : nothing}
         ${renderConfigTabForActiveTab()}
+        ${state.tab === "team"
+          ? html`<section class="agents-layout" style="padding: 0 20px 24px;">
+              ${renderAgentsTeamPanel({
+                agentsList: state.agentsList,
+                defaultId: state.agentsList?.defaultId ?? null,
+                loading: state.agentsLoading,
+                busy: state.teamAgentBusy,
+                error: state.teamAgentError,
+                deleteBusyAgentId: state.teamDeleteBusyAgentId,
+                draftName: state.teamDraftName,
+                draftWorkspace: state.teamDraftWorkspace,
+                draftModel: state.teamDraftModel,
+                onDraftChange: (patch) => {
+                  if (typeof patch.name === "string") {
+                    state.teamDraftName = patch.name;
+                  }
+                  if (typeof patch.workspace === "string") {
+                    state.teamDraftWorkspace = patch.workspace;
+                  }
+                  if (typeof patch.model === "string") {
+                    state.teamDraftModel = patch.model;
+                  }
+                },
+                onProvision: () => {
+                  void provisionTeamAgent(state);
+                },
+                onDelete: (agentId) => {
+                  void deleteTeamAgent(state, agentId);
+                },
+              })}
+            </section>`
+          : nothing}
         ${state.tab === "debug"
           ? lazyRender(lazyDebug, (m) =>
               m.renderDebug({

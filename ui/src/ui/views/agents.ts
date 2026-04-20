@@ -18,7 +18,6 @@ import {
   renderAgentChannels,
   renderAgentCron,
 } from "./agents-panels-status-files.ts";
-import { renderAgentsTeamPanel } from "./agents-panels-team.ts";
 export type { AgentsPanel } from "./agents.types.ts";
 import { renderAgentTools, renderAgentSkills } from "./agents-panels-tools-skills.ts";
 import { agentBadgeText, buildAgentContext, normalizeAgentLabel } from "./agents-utils.ts";
@@ -118,17 +117,6 @@ export type AgentsProps = {
   onAgentSkillsClear: (agentId: string) => void;
   onAgentSkillsDisableAll: (agentId: string) => void;
   onSetDefault: (agentId: string) => void;
-  team: {
-    busy: boolean;
-    error: string | null;
-    deleteBusyAgentId: string | null;
-    draftName: string;
-    draftWorkspace: string;
-    draftModel: string;
-  };
-  onTeamDraftChange: (patch: { name?: string; workspace?: string; model?: string }) => void;
-  onTeamProvision: () => void;
-  onTeamDelete: (agentId: string) => void;
 };
 
 export function renderAgents(props: AgentsProps) {
@@ -218,34 +206,19 @@ export function renderAgents(props: AgentsProps) {
           : nothing}
       </section>
       <section class="agents-main">
-        ${renderAgentTabs(
-          props.activePanel,
-          (panel) => props.onSelectPanel(panel),
-          tabCounts,
-        )}
-        ${props.activePanel === "team"
-          ? renderAgentsTeamPanel({
-              agentsList: props.agentsList,
-              defaultId,
-              loading: props.loading,
-              busy: props.team.busy,
-              error: props.team.error,
-              deleteBusyAgentId: props.team.deleteBusyAgentId,
-              draftName: props.team.draftName,
-              draftWorkspace: props.team.draftWorkspace,
-              draftModel: props.team.draftModel,
-              onDraftChange: props.onTeamDraftChange,
-              onProvision: props.onTeamProvision,
-              onDelete: props.onTeamDelete,
-            })
-          : !selectedAgent
-            ? html`
-                <div class="card">
-                  <div class="card-title">Select an agent</div>
-                  <div class="card-sub">Pick an agent to inspect its workspace and tools.</div>
-                </div>
-              `
-            : html`
+        ${!selectedAgent
+          ? html`
+              <div class="card">
+                <div class="card-title">Select an agent</div>
+                <div class="card-sub">Pick an agent to inspect its workspace and tools.</div>
+              </div>
+            `
+          : html`
+              ${renderAgentTabs(
+                props.activePanel,
+                (panel) => props.onSelectPanel(panel),
+                tabCounts,
+              )}
               ${props.activePanel === "overview"
                 ? renderAgentOverview({
                     agent: selectedAgent,
@@ -363,7 +336,7 @@ export function renderAgents(props: AgentsProps) {
                     onSelectPanel: props.onSelectPanel,
                   })
                 : nothing}
-              `}
+            `}
       </section>
     </div>
   `;
@@ -375,7 +348,6 @@ function renderAgentTabs(
   counts: Record<string, number | null>,
 ) {
   const tabs: Array<{ id: AgentsPanel; label: string }> = [
-    { id: "team", label: t("agentsTeam.tab") },
     { id: "overview", label: "Overview" },
     { id: "files", label: "Files" },
     { id: "tools", label: "Tools" },

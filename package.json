@@ -1340,7 +1340,10 @@
     "ui:dev": "node scripts/ui.js dev",
     "ui:i18n:check": "node --import tsx scripts/control-ui-i18n.ts check",
     "ui:i18n:sync": "node --import tsx scripts/control-ui-i18n.ts sync --write",
-    "ui:install": "node scripts/ui.js install"
+    "ui:install": "node scripts/ui.js install",
+    "ui-admin:dev": "pnpm --dir ui_admin dev",
+    "ui-admin:server": "pnpm --dir ui_admin server",
+    "ui-admin:build": "pnpm --dir ui_admin build"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "0.18.2",

@@ -62,6 +62,13 @@ const PALETTE_ITEMS: PaletteItem[] = [
     action: "nav:agents",
   },
   {
+    id: "nav-team",
+    label: "Team",
+    icon: "users",
+    category: "navigation",
+    action: "nav:team",
+  },
+  {
     id: "skill-shell",
     label: "Shell Command",
     icon: "monitor",

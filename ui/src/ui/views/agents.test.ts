@@ -117,17 +117,6 @@ function createProps(overrides: Partial<AgentsProps> = {}): AgentsProps {
     onAgentSkillsClear: () => undefined,
     onAgentSkillsDisableAll: () => undefined,
     onSetDefault: () => undefined,
-    team: {
-      busy: false,
-      error: null,
-      deleteBusyAgentId: null,
-      draftName: "",
-      draftWorkspace: "",
-      draftModel: "",
-    },
-    onTeamDraftChange: () => undefined,
-    onTeamProvision: () => undefined,
-    onTeamDelete: () => undefined,
     ...overrides,
   };
 }

@@ -301,8 +301,7 @@ export class OpenClawApp extends LitElement {
   @state() toolsEffectiveResultKey: string | null = null;
   @state() toolsEffectiveError: string | null = null;
   @state() toolsEffectiveResult: ToolsEffectiveResult | null = null;
-  @state() agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "team" =
-    "files";
+  @state() agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron" = "files";
   @state() teamAgentBusy = false;
   @state() teamAgentError: string | null = null;
   @state() teamDeleteBusyAgentId: string | null = null;

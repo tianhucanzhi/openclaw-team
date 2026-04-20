@@ -40,7 +40,7 @@ export type AgentsState = {
   sessionsResult?: SessionsListResult | null;
   chatModelOverrides?: Record<string, ChatModelOverride | null>;
   chatModelCatalog?: ModelCatalogEntry[];
-  agentsPanel?: "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "team";
+  agentsPanel?: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
 };
 
 export type AgentsConfigSaveState = AgentsState & ConfigState;

@@ -122,13 +122,16 @@ describe("refreshActiveTab", () => {
     });
   }
 
-  it("routes agents team panel refresh without panel-specific loaders", async () => {
+  it("routes team tab refresh through agents list + config loaders", async () => {
     const host = createHost();
-    host.agentsPanel = "team";
+    host.tab = "team";
 
     await refreshActiveTab(host as never);
 
-    expectCommonAgentsTabRefresh(host);
+    expect(mocks.loadAgentsMock).toHaveBeenCalledOnce();
+    expect(mocks.loadConfigMock).toHaveBeenCalledOnce();
+    expect(mocks.loadAgentIdentitiesMock).not.toHaveBeenCalled();
+    expect(mocks.loadAgentIdentityMock).not.toHaveBeenCalled();
     expect(mocks.loadAgentFilesMock).not.toHaveBeenCalled();
     expect(mocks.loadAgentSkillsMock).not.toHaveBeenCalled();
     expect(mocks.loadChannelsMock).not.toHaveBeenCalled();

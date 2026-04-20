@@ -196,7 +196,7 @@ export type AppViewState = {
   toolsEffectiveResultKey: string | null;
   toolsEffectiveError: string | null;
   toolsEffectiveResult: import("./types.js").ToolsEffectiveResult | null;
-  agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "team";
+  agentsPanel: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
   teamAgentBusy: boolean;
   teamAgentError: string | null;
   teamDeleteBusyAgentId: string | null;

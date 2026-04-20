@@ -73,7 +73,7 @@ type SettingsHost = {
   basePath: string;
   agentsList?: AgentsListResult | null;
   agentsSelectedId?: string | null;
-  agentsPanel?: "overview" | "files" | "tools" | "skills" | "channels" | "cron" | "team";
+  agentsPanel?: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
   pendingGatewayUrl?: string | null;
   systemThemeCleanup?: (() => void) | null;
   pendingGatewayToken?: string | null;
@@ -289,8 +289,6 @@ async function refreshAgentsTab(host: SettingsHost, app: SettingsAppHost) {
     case "cron":
       void loadCron(host);
       return;
-    case "team":
-      return;
   }
 }
 
@@ -329,6 +327,10 @@ export async function refreshActiveTab(host: SettingsHost) {
       return;
     case "agents":
       await refreshAgentsTab(host, app);
+      return;
+    case "team":
+      await loadAgents(app);
+      await loadConfig(app);
       return;
     case "nodes":
       await loadNodes(app);

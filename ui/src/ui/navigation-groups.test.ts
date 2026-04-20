@@ -11,6 +11,7 @@ describe("TAB_GROUPS", () => {
       "automation",
       "infrastructure",
       "aiAgents",
+      "team",
       "debug",
       "logs",
     ]);
@@ -22,6 +23,7 @@ describe("TAB_GROUPS", () => {
     expect(tabFromPath("/automation")).toBe("automation");
     expect(tabFromPath("/infrastructure")).toBe("infrastructure");
     expect(tabFromPath("/ai-agents")).toBe("aiAgents");
+    expect(tabFromPath("/team")).toBe("team");
     expect(tabFromPath("/config")).toBe("config");
   });
 });
