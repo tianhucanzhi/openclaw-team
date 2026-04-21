@@ -154,6 +154,13 @@ type SkillsPayload = {
   employees: SkillsEmployeeRow[];
 };
 
+type PublicSkillItem = {
+  id: string;
+  hasSkillDoc: boolean;
+  files: string[];
+  hasScriptsDir: boolean;
+};
+
 async function api<T>(
   path: string,
   init?: RequestInit & { json?: unknown },
@@ -222,6 +229,16 @@ export class OpenClawAdminApp extends LitElement {
     skillsError: { state: true },
     skillsPayload: { state: true },
     skillsAgentId: { state: true },
+    publicSkillsLoading: { state: true },
+    publicSkillsError: { state: true },
+    publicSkillsOk: { state: true },
+    publicSkillsRootDir: { state: true },
+    publicSkills: { state: true },
+    publicSelectedSkillId: { state: true },
+    publicSelectedFilePath: { state: true },
+    publicFileContentDraft: { state: true },
+    publicNewSkillId: { state: true },
+    publicNewFilePath: { state: true },
   };
 
   session: "unknown" | "admin" | "none" = "unknown";
@@ -240,7 +257,7 @@ export class OpenClawAdminApp extends LitElement {
   /** Shown once after create/regenerate so admin can copy before navigating away. */
   highlightGatewayToken: string | null = null;
   /** Post-login sidebar section (extensible). */
-  adminNav: "employees" | "models" | "usage" | "skills" = "employees";
+  adminNav: "employees" | "models" | "usage" | "skills" | "publicSkills" = "employees";
   modelsLoading = false;
   modelsError: string | null = null;
   modelsOk: string | null = null;
@@ -257,6 +274,16 @@ export class OpenClawAdminApp extends LitElement {
   skillsError: string | null = null;
   skillsPayload: SkillsPayload | null = null;
   skillsAgentId = "main";
+  publicSkillsLoading = false;
+  publicSkillsError: string | null = null;
+  publicSkillsOk: string | null = null;
+  publicSkillsRootDir = "";
+  publicSkills: PublicSkillItem[] = [];
+  publicSelectedSkillId = "";
+  publicSelectedFilePath = "";
+  publicFileContentDraft = "";
+  publicNewSkillId = "";
+  publicNewFilePath = "";
 
   static styles = css`
     :host {
@@ -932,6 +959,54 @@ export class OpenClawAdminApp extends LitElement {
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
+    .split {
+      display: grid;
+      grid-template-columns: minmax(260px, 340px) 1fr;
+      gap: 16px;
+    }
+    .list-box {
+      border: 1px solid var(--border, #2a3040);
+      border-radius: 10px;
+      background: rgba(10, 12, 18, 0.4);
+      padding: 10px;
+      max-height: 72vh;
+      overflow: auto;
+    }
+    .list-title {
+      margin: 0 0 8px;
+      font-size: 0.82rem;
+      color: #9aa0a6;
+    }
+    .list-item {
+      width: 100%;
+      margin: 0 0 6px;
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      text-align: left;
+      color: #dbe1ea;
+      padding: 8px 10px;
+      font-size: 0.83rem;
+    }
+    .list-item.active {
+      border-color: rgba(232, 93, 76, 0.45);
+      background: rgba(232, 93, 76, 0.12);
+      color: #ffc3b8;
+    }
+    .editor-wrap textarea {
+      width: 100%;
+      min-height: 420px;
+      resize: vertical;
+      border-radius: 8px;
+      border: 1px solid var(--border, #2a3040);
+      background: #0b0d11;
+      color: #e8eaed;
+      padding: 10px 12px;
+      box-sizing: border-box;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.8rem;
+      line-height: 1.45;
+    }
   `;
 
   connectedCallback(): void {
@@ -1001,6 +1076,16 @@ export class OpenClawAdminApp extends LitElement {
     this.skillsError = null;
     this.skillsPayload = null;
     this.skillsAgentId = "main";
+    this.publicSkillsLoading = false;
+    this.publicSkillsError = null;
+    this.publicSkillsOk = null;
+    this.publicSkillsRootDir = "";
+    this.publicSkills = [];
+    this.publicSelectedSkillId = "";
+    this.publicSelectedFilePath = "";
+    this.publicFileContentDraft = "";
+    this.publicNewSkillId = "";
+    this.publicNewFilePath = "";
     this.adminNav = "employees";
   }
 
@@ -1126,7 +1211,7 @@ export class OpenClawAdminApp extends LitElement {
     void this.loadEmployees();
   }
 
-  private onSelectNav(nav: "employees" | "models" | "usage" | "skills") {
+  private onSelectNav(nav: "employees" | "models" | "usage" | "skills" | "publicSkills") {
     this.adminNav = nav;
     if (nav === "models") {
       void this.loadMainModels();
@@ -1137,6 +1222,177 @@ export class OpenClawAdminApp extends LitElement {
     if (nav === "skills") {
       void this.loadSkillsMonitor();
     }
+    if (nav === "publicSkills") {
+      void this.loadPublicSkills();
+    }
+  }
+
+  private selectedPublicSkill(): PublicSkillItem | undefined {
+    return this.publicSkills.find((x) => x.id === this.publicSelectedSkillId);
+  }
+
+  private async loadPublicSkills() {
+    this.publicSkillsLoading = true;
+    this.publicSkillsError = null;
+    const r = await api<{ rootDir: string; skills: PublicSkillItem[] }>("/api/public-skills");
+    this.publicSkillsLoading = false;
+    if (!r.ok) {
+      this.publicSkillsError = r.error ?? "加载失败";
+      this.publicSkills = [];
+      return;
+    }
+    this.publicSkillsRootDir = r.data?.rootDir ?? "";
+    this.publicSkills = r.data?.skills ?? [];
+    if (!this.publicSelectedSkillId || !this.publicSkills.some((x) => x.id === this.publicSelectedSkillId)) {
+      this.publicSelectedSkillId = this.publicSkills[0]?.id ?? "";
+      this.publicSelectedFilePath = "";
+      this.publicFileContentDraft = "";
+    }
+    const selected = this.selectedPublicSkill();
+    if (selected && !this.publicSelectedFilePath) {
+      const firstFile = selected.files.includes("SKILL.md") ? "SKILL.md" : selected.files[0];
+      if (firstFile) {
+        await this.loadPublicSkillFile(selected.id, firstFile);
+      }
+    }
+  }
+
+  private async createPublicSkill() {
+    this.publicSkillsError = null;
+    this.publicSkillsOk = null;
+    const skillId = this.publicNewSkillId.trim();
+    if (!skillId) {
+      this.publicSkillsError = "请先输入技能名称。";
+      return;
+    }
+    this.busy = true;
+    const r = await api("/api/public-skills", { method: "POST", json: { skillId } });
+    this.busy = false;
+    if (!r.ok) {
+      this.publicSkillsError = r.error ?? "创建失败";
+      return;
+    }
+    this.publicNewSkillId = "";
+    this.publicSkillsOk = `已创建技能：${skillId}`;
+    await this.loadPublicSkills();
+    this.publicSelectedSkillId = skillId;
+    this.publicSelectedFilePath = "SKILL.md";
+    await this.loadPublicSkillFile(skillId, "SKILL.md");
+  }
+
+  private async removePublicSkill(skillId: string) {
+    if (!confirm(`确定删除公共技能 ${skillId} 吗？将删除整个技能目录。`)) {
+      return;
+    }
+    this.busy = true;
+    this.publicSkillsError = null;
+    const r = await api(`/api/public-skills/${encodeURIComponent(skillId)}`, { method: "DELETE" });
+    this.busy = false;
+    if (!r.ok) {
+      this.publicSkillsError = r.error ?? "删除失败";
+      return;
+    }
+    this.publicSkillsOk = `已删除技能：${skillId}`;
+    if (this.publicSelectedSkillId === skillId) {
+      this.publicSelectedSkillId = "";
+      this.publicSelectedFilePath = "";
+      this.publicFileContentDraft = "";
+    }
+    await this.loadPublicSkills();
+  }
+
+  private async loadPublicSkillFile(skillId: string, relPath: string) {
+    this.publicSkillsError = null;
+    this.publicSkillsOk = null;
+    this.publicSelectedSkillId = skillId;
+    this.publicSelectedFilePath = relPath;
+    const r = await api<{ content: string }>(
+      `/api/public-skills/${encodeURIComponent(skillId)}/file?path=${encodeURIComponent(relPath)}`,
+    );
+    if (!r.ok) {
+      this.publicSkillsError = r.error ?? "读取失败";
+      this.publicFileContentDraft = "";
+      return;
+    }
+    this.publicFileContentDraft = r.data?.content ?? "";
+  }
+
+  private async savePublicSkillFile() {
+    this.publicSkillsError = null;
+    this.publicSkillsOk = null;
+    const skillId = this.publicSelectedSkillId;
+    const relPath = this.publicSelectedFilePath.trim();
+    if (!skillId || !relPath) {
+      this.publicSkillsError = "请先选择技能与文件。";
+      return;
+    }
+    this.busy = true;
+    const r = await api(`/api/public-skills/${encodeURIComponent(skillId)}/file`, {
+      method: "PUT",
+      json: { path: relPath, content: this.publicFileContentDraft },
+    });
+    this.busy = false;
+    if (!r.ok) {
+      this.publicSkillsError = r.error ?? "保存失败";
+      return;
+    }
+    this.publicSkillsOk = `已保存：${skillId}/${relPath}`;
+    await this.loadPublicSkills();
+  }
+
+  private async createPublicSkillFile() {
+    this.publicSkillsError = null;
+    this.publicSkillsOk = null;
+    const skillId = this.publicSelectedSkillId;
+    const relPath = this.publicNewFilePath.trim();
+    if (!skillId) {
+      this.publicSkillsError = "请先选择技能。";
+      return;
+    }
+    if (!relPath) {
+      this.publicSkillsError = "请填写新文件路径，例如 scripts/new.py。";
+      return;
+    }
+    this.busy = true;
+    const r = await api(`/api/public-skills/${encodeURIComponent(skillId)}/file`, {
+      method: "PUT",
+      json: { path: relPath, content: "" },
+    });
+    this.busy = false;
+    if (!r.ok) {
+      this.publicSkillsError = r.error ?? "创建文件失败";
+      return;
+    }
+    this.publicNewFilePath = "";
+    this.publicSkillsOk = `已创建文件：${skillId}/${relPath}`;
+    await this.loadPublicSkills();
+    await this.loadPublicSkillFile(skillId, relPath);
+  }
+
+  private async removePublicSkillFile() {
+    const skillId = this.publicSelectedSkillId;
+    const relPath = this.publicSelectedFilePath.trim();
+    if (!skillId || !relPath) {
+      this.publicSkillsError = "请先选择要删除的文件。";
+      return;
+    }
+    if (!confirm(`确定删除文件 ${skillId}/${relPath} 吗？`)) {
+      return;
+    }
+    this.busy = true;
+    const r = await api(
+      `/api/public-skills/${encodeURIComponent(skillId)}/file?path=${encodeURIComponent(relPath)}`,
+      { method: "DELETE" },
+    );
+    this.busy = false;
+    if (!r.ok) {
+      this.publicSkillsError = r.error ?? "删除文件失败";
+      return;
+    }
+    this.publicSkillsOk = `已删除文件：${skillId}/${relPath}`;
+    this.publicSelectedFilePath = "";
+    this.publicFileContentDraft = "";
+    await this.loadPublicSkills();
   }
 
   private fmtUsageTok(n: unknown): string {
@@ -1312,6 +1568,18 @@ export class OpenClawAdminApp extends LitElement {
     >
       <path d="M12 2l2.1 4.3L19 7l-3.5 3.4.8 4.8L12 13l-4.3 2.2.8-4.8L5 7l4.9-.7z"></path>
     </svg>`;
+    const libraryIcon = html`<svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
+    </svg>`;
 
     if (this.session === "unknown") {
       return html`
@@ -1404,6 +1672,14 @@ export class OpenClawAdminApp extends LitElement {
               ${skillsIcon}
               技能监控
             </button>
+            <button
+              type="button"
+              class="sidebar__item ${this.adminNav === "publicSkills" ? "sidebar__item--active" : ""}"
+              @click=${() => this.onSelectNav("publicSkills")}
+            >
+              ${libraryIcon}
+              公共技能库
+            </button>
           </nav>
         </aside>
         <div class="main">
@@ -1415,7 +1691,9 @@ export class OpenClawAdminApp extends LitElement {
                   ? "模型管理"
                   : this.adminNav === "usage"
                     ? "使用监控"
-                    : "技能监控"}
+                    : this.adminNav === "skills"
+                      ? "技能监控"
+                      : "公共技能库"}
             </h1>
             <div class="main-header__actions">
               <button type="button" class="secondary" @click=${this.onLogout}>退出登录</button>
@@ -1428,7 +1706,9 @@ export class OpenClawAdminApp extends LitElement {
                 ? this.renderModelsPanel()
                 : this.adminNav === "usage"
                   ? this.renderUsagePanel()
-                  : this.renderSkillsPanel()}
+                  : this.adminNav === "skills"
+                    ? this.renderSkillsPanel()
+                    : this.renderPublicSkillsPanel()}
           </div>
         </div>
       </div>
@@ -2046,6 +2326,133 @@ export class OpenClawAdminApp extends LitElement {
           : !this.skillsLoading
             ? html`<p class="sub">请点击「技能监控」或「刷新」加载数据。</p>`
             : ""}
+      </div>
+    `;
+  }
+
+  private renderPublicSkillsPanel() {
+    const selected = this.selectedPublicSkill();
+    const fileButtons = selected?.files ?? [];
+    return html`
+      <div class="card">
+        <div class="topbar">
+          <div>
+            <h1>公共技能库（建议使用main下对话管理）</h1>
+            <p class="sub">
+              维护公共技能库下的技能目录与文件。可创建/删除技能、创建/删除文件，并在线编辑保存。
+            </p>
+            ${this.publicSkillsRootDir
+              ? html`<p class="models-meta">目录：<code>${this.publicSkillsRootDir}</code></p>`
+              : ""}
+          </div>
+        </div>
+        <div class="usage-toolbar">
+          <input
+            placeholder="新技能名，例如 text-to-pdf"
+            .value=${this.publicNewSkillId}
+            @input=${(e: Event) => (this.publicNewSkillId = (e.target as HTMLInputElement).value)}
+          />
+          <button type="button" ?disabled=${this.busy} @click=${() => void this.createPublicSkill()}>新建技能</button>
+          <button type="button" class="secondary" ?disabled=${this.publicSkillsLoading} @click=${() => void this.loadPublicSkills()}>
+            ${this.publicSkillsLoading ? "加载中…" : "刷新列表"}
+          </button>
+          ${selected
+            ? html`<button
+                type="button"
+                class="danger"
+                ?disabled=${this.busy}
+                @click=${() => void this.removePublicSkill(selected.id)}
+              >
+                删除当前技能
+              </button>`
+            : ""}
+        </div>
+        ${this.publicSkillsError ? html`<div class="err">${this.publicSkillsError}</div>` : ""}
+        ${this.publicSkillsOk ? html`<div class="ok">${this.publicSkillsOk}</div>` : ""}
+        <div class="split">
+          <div class="list-box">
+            <p class="list-title">技能目录</p>
+            ${this.publicSkills.length === 0
+              ? html`<p class="sub">暂无技能目录</p>`
+              : this.publicSkills.map(
+                  (row) => html`<button
+                    type="button"
+                    class="list-item ${this.publicSelectedSkillId === row.id ? "active" : ""}"
+                    @click=${async () => {
+                      this.publicSelectedSkillId = row.id;
+                      this.publicSelectedFilePath = "";
+                      this.publicFileContentDraft = "";
+                      const defaultFile = row.files.includes("SKILL.md") ? "SKILL.md" : row.files[0];
+                      if (defaultFile) {
+                        await this.loadPublicSkillFile(row.id, defaultFile);
+                      }
+                    }}
+                  >
+                    ${row.id}${row.hasSkillDoc ? "" : " · 缺少 SKILL.md"}
+                  </button>`,
+                )}
+            ${selected
+              ? html`
+                  <hr style="border-color:rgba(255,255,255,0.08);margin:10px 0;" />
+                  <p class="list-title">文件列表（${selected.id}）</p>
+                  ${fileButtons.length === 0
+                    ? html`<p class="sub">暂无文件</p>`
+                    : fileButtons.map(
+                        (fp) => html`<button
+                          type="button"
+                          class="list-item ${this.publicSelectedFilePath === fp ? "active" : ""}"
+                          @click=${() => void this.loadPublicSkillFile(selected.id, fp)}
+                        >
+                          ${fp}
+                        </button>`,
+                      )}
+                `
+              : ""}
+          </div>
+          <div>
+            ${selected
+              ? html`
+                  <div class="usage-toolbar">
+                    <input
+                      placeholder="新文件路径，例如 scripts/new.py"
+                      .value=${this.publicNewFilePath}
+                      @input=${(e: Event) => (this.publicNewFilePath = (e.target as HTMLInputElement).value)}
+                    />
+                    <button type="button" class="secondary" ?disabled=${this.busy} @click=${() => void this.createPublicSkillFile()}>
+                      新建文件
+                    </button>
+                    <button
+                      type="button"
+                      class="danger"
+                      ?disabled=${this.busy || !this.publicSelectedFilePath}
+                      @click=${() => void this.removePublicSkillFile()}
+                    >
+                      删除当前文件
+                    </button>
+                  </div>
+                  ${this.publicSelectedFilePath
+                    ? html`
+                        <p class="models-meta">
+                          正在编辑：<code>${selected.id}/${this.publicSelectedFilePath}</code>
+                        </p>
+                        <div class="editor-wrap">
+                          <textarea
+                            .value=${this.publicFileContentDraft}
+                            @input=${(e: Event) =>
+                              (this.publicFileContentDraft = (e.target as HTMLTextAreaElement).value)}
+                          ></textarea>
+                        </div>
+                        <div class="models-actions">
+                          <button type="button" ?disabled=${this.busy} @click=${() => void this.savePublicSkillFile()}>
+                            保存文件
+                          </button>
+                        </div>
+                      `
+                    : html`<p class="sub">请选择要编辑的文件。</p>`}
+                `
+              : html`<p class="sub">请先选择或创建一个技能目录。</p>`}
+          </div>
+        </div>
       </div>
     `;
   }

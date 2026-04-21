@@ -22,6 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const OPENCLAW_ENTRY = path.join(REPO_ROOT, "openclaw.mjs");
 const STATIC_ROOT = path.join(REPO_ROOT, "dist", "ui-admin");
+const PUBLIC_SKILLS_ROOT = path.join(REPO_ROOT, "skills");
 
 const DATA_ROOT = process.env.OPENCLAW_ADMIN_DATA_DIR
   ? path.resolve(process.env.OPENCLAW_ADMIN_DATA_DIR)
@@ -311,6 +312,172 @@ function mergeMainAgentModel(cfg, main) {
   cfg.agents = { ...(cfg.agents && typeof cfg.agents === "object" ? cfg.agents : {}), list };
 }
 
+function resolveMainWorkspaceDir(cfg) {
+  if (!cfg || typeof cfg !== "object") {
+    return "";
+  }
+  const list = Array.isArray(cfg.agents?.list) ? cfg.agents.list : [];
+  const mainEntry =
+    list.find((a) => a && typeof a === "object" && a.id === "main") ??
+    list.find((a) => a && typeof a === "object" && a.default === true);
+  const fromMainEntry = typeof mainEntry?.workspace === "string" ? mainEntry.workspace.trim() : "";
+  if (fromMainEntry) {
+    return fromMainEntry;
+  }
+  const fromDefaults =
+    typeof cfg.agents?.defaults?.workspace === "string" ? cfg.agents.defaults.workspace.trim() : "";
+  if (fromDefaults) {
+    return fromDefaults;
+  }
+  return "";
+}
+
+function resolveSharedMainSkillsDir(mainCfg) {
+  const mainWorkspace = resolveMainWorkspaceDir(mainCfg);
+  const candidates = [];
+  if (mainWorkspace) {
+    candidates.push(path.join(mainWorkspace, "skills"));
+  }
+  candidates.push(path.join(resolveMainOpenclawStateRoot(), "workspace", "skills"));
+  candidates.push(path.join(REPO_ROOT, "skills"));
+  for (const dir of candidates) {
+    try {
+      if (existsSync(dir)) {
+        return dir;
+      }
+    } catch {
+      // ignore and try next candidate
+    }
+  }
+  return candidates[0];
+}
+
+function isSafeSimpleName(name) {
+  return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(name);
+}
+
+function resolvePublicSkillDir(skillId) {
+  const id = String(skillId ?? "").trim();
+  if (!isSafeSimpleName(id)) {
+    throw new Error("无效技能名称");
+  }
+  const abs = path.resolve(PUBLIC_SKILLS_ROOT, id);
+  const normalizedRoot = path.normalize(PUBLIC_SKILLS_ROOT + path.sep);
+  const normalizedAbs = path.normalize(abs + path.sep);
+  if (!normalizedAbs.startsWith(normalizedRoot)) {
+    throw new Error("技能路径越界");
+  }
+  return abs;
+}
+
+function resolvePublicSkillFile(skillId, relPath) {
+  const baseDir = resolvePublicSkillDir(skillId);
+  const nextRel = String(relPath ?? "").replace(/\\/g, "/").trim();
+  if (!nextRel || nextRel.startsWith("/") || nextRel.includes("..")) {
+    throw new Error("无效文件路径");
+  }
+  const abs = path.resolve(baseDir, nextRel);
+  const normalizedBase = path.normalize(baseDir + path.sep);
+  const normalizedAbs = path.normalize(abs);
+  if (!normalizedAbs.startsWith(normalizedBase)) {
+    throw new Error("文件路径越界");
+  }
+  return abs;
+}
+
+async function listPublicSkills() {
+  await fs.mkdir(PUBLIC_SKILLS_ROOT, { recursive: true });
+  const entries = await fs.readdir(PUBLIC_SKILLS_ROOT, { withFileTypes: true });
+  const skills = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    if (!isSafeSimpleName(entry.name)) {
+      continue;
+    }
+    const skillDir = path.join(PUBLIC_SKILLS_ROOT, entry.name);
+    let children = [];
+    try {
+      children = await fs.readdir(skillDir, { withFileTypes: true });
+    } catch {
+      children = [];
+    }
+    const files = [];
+    const collectFilesRecursively = async (baseDir, relPrefix = "") => {
+      let rows = [];
+      try {
+        rows = await fs.readdir(baseDir, { withFileTypes: true });
+      } catch {
+        rows = [];
+      }
+      for (const row of rows) {
+        const relPath = relPrefix ? `${relPrefix}/${row.name}` : row.name;
+        if (row.isDirectory()) {
+          if (row.name.startsWith(".")) {
+            continue;
+          }
+          await collectFilesRecursively(path.join(baseDir, row.name), relPath);
+          continue;
+        }
+        if (!row.isFile()) {
+          continue;
+        }
+        files.push(relPath);
+      }
+    };
+    await collectFilesRecursively(skillDir);
+    files.sort((a, b) => a.localeCompare(b, "en"));
+    const hasSkillDoc = files.includes("SKILL.md");
+    skills.push({
+      id: entry.name,
+      hasSkillDoc,
+      files,
+      hasScriptsDir: children.some((c) => c.isDirectory() && c.name === "scripts"),
+    });
+  }
+  skills.sort((a, b) => a.id.localeCompare(b.id, "en"));
+  return skills;
+}
+
+async function seedSharedSkillsIntoWorkspace(params) {
+  const sharedSkillsDir = String(params.sharedSkillsDir ?? "").trim();
+  const workspaceDir = String(params.workspaceDir ?? "").trim();
+  if (!sharedSkillsDir || !workspaceDir) {
+    return;
+  }
+  if (!existsSync(sharedSkillsDir)) {
+    return;
+  }
+  const targetSkillsDir = path.join(workspaceDir, "skills");
+  await fs.mkdir(targetSkillsDir, { recursive: true });
+  let entries;
+  try {
+    entries = await fs.readdir(sharedSkillsDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    if (entry.name.startsWith(".")) {
+      continue;
+    }
+    const srcDir = path.join(sharedSkillsDir, entry.name);
+    const destDir = path.join(targetSkillsDir, entry.name);
+    if (existsSync(destDir)) {
+      // Keep employee-local edits; only seed skills that are missing locally.
+      continue;
+    }
+    try {
+      await fs.cp(srcDir, destDir, { recursive: true });
+    } catch {
+      // Best effort; skip individual skill copy failures.
+    }
+  }
+}
+
 /** When updating Z.AI, keep writing to the same `models.providers` key the user already uses (`z-ai` vs `zai`). */
 function providerStorageKeyForWrite(cfg, presetId) {
   if (presetId !== "zai") {
@@ -465,13 +632,13 @@ function resolveMainOpenclawStateRoot() {
  * `auth.profiles` in openclaw.json does not contain secrets; keys live in `auth-profiles.json`
  * under the agent dir. Employee gateways use an isolated `OPENCLAW_STATE_DIR`, so copy main's store.
  */
-async function copyMainAgentAuthProfilesToEmployee(employeeId) {
+async function copyMainAgentAuthProfilesToEmployee(employee) {
   const mainRoot = resolveMainOpenclawStateRoot();
   const src = path.join(mainRoot, "agents", "main", "agent", "auth-profiles.json");
   if (!existsSync(src)) {
     return;
   }
-  const destDir = path.join(employeeDir(employeeId), "state", "agents", "main", "agent");
+  const destDir = path.join(employeeDir(employee), "state", "agents", "main", "agent");
   await fs.mkdir(destDir, { recursive: true });
   const dest = path.join(destDir, "auth-profiles.json");
   await fs.copyFile(src, dest);
@@ -482,7 +649,8 @@ async function copyMainAgentAuthProfilesToEmployee(employeeId) {
  * @param {{ inheritMainModels?: boolean; mergeIntoExisting?: boolean }} [options]
  */
 async function writeEmployeeGatewayConfig(emp, options = {}) {
-  const dir = employeeDir(emp.id);
+  const dir = employeeDir(emp);
+  const workspaceDir = employeeWorkspaceDir(emp);
   const configPath = path.join(dir, "openclaw.json");
   const token = typeof emp.gatewayToken === "string" ? emp.gatewayToken.trim() : "";
 
@@ -504,6 +672,7 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
       cfg = extractEmployeeModelSliceFromMainConfig(mainCfg);
     }
   }
+  const mainCfg = await loadMainOpenclawJson();
 
   const prevGw = cfg.gateway && typeof cfg.gateway === "object" ? cfg.gateway : {};
   cfg.gateway = {
@@ -519,12 +688,42 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
       : {}),
   };
 
+  // Keep employee gateways on isolated workspaces.
+  cfg.agents = cfg.agents && typeof cfg.agents === "object" ? cfg.agents : {};
+  cfg.agents.defaults =
+    cfg.agents.defaults && typeof cfg.agents.defaults === "object" ? cfg.agents.defaults : {};
+  if (
+    typeof cfg.agents.defaults.workspace !== "string" ||
+    cfg.agents.defaults.workspace.trim().length === 0
+  ) {
+    cfg.agents.defaults.workspace = workspaceDir;
+  }
+
+  // Seed main shared skills into each employee workspace so subsequent edits stay local.
+  const sharedMainSkillsDir = resolveSharedMainSkillsDir(mainCfg);
+  await seedSharedSkillsIntoWorkspace({
+    sharedSkillsDir: sharedMainSkillsDir,
+    workspaceDir,
+  });
+
+  // Do not expose shared main skills path directly; otherwise tool invocations will
+  // keep operating on global paths instead of employee-local workspace copies.
+  cfg.skills = cfg.skills && typeof cfg.skills === "object" ? cfg.skills : {};
+  cfg.skills.load = cfg.skills.load && typeof cfg.skills.load === "object" ? cfg.skills.load : {};
+  const extraDirsCurrent = Array.isArray(cfg.skills.load.extraDirs) ? cfg.skills.load.extraDirs : [];
+  const normalizedShared = sharedMainSkillsDir.trim().toLowerCase();
+  const extraDirsNext = extraDirsCurrent
+    .map((v) => (typeof v === "string" ? v.trim() : ""))
+    .filter((v) => v && v.trim().toLowerCase() !== normalizedShared);
+  cfg.skills.load.extraDirs = extraDirsNext;
+
   await fs.mkdir(dir, { recursive: true });
+  await fs.mkdir(workspaceDir, { recursive: true });
   await fs.writeFile(configPath, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
 
   if (!options.mergeIntoExisting && options.inheritMainModels !== false) {
     try {
-      await copyMainAgentAuthProfilesToEmployee(emp.id);
+      await copyMainAgentAuthProfilesToEmployee(emp);
     } catch (err) {
       process.stderr.write(
         `[openclaw-ui-admin] warn: could not copy main auth-profiles.json for employee ${emp.id}: ${String(err?.message ?? err)}\n`,
@@ -627,8 +826,49 @@ function isAdmin(req) {
   return Boolean(s && s.role === "admin");
 }
 
-function employeeDir(id) {
-  return path.join(DATA_ROOT, "employees", id);
+function resolveEmployeeDirKey(employee) {
+  if (!employee || typeof employee !== "object") {
+    return "";
+  }
+  const byDirName = typeof employee.dirName === "string" ? employee.dirName.trim() : "";
+  if (byDirName) {
+    return byDirName;
+  }
+  const username = typeof employee.username === "string" ? employee.username.trim() : "";
+  const id = typeof employee.id === "string" ? employee.id.trim() : "";
+  if (!username) {
+    return id;
+  }
+  const usernameDir = path.join(DATA_ROOT, "employees", username);
+  const idDir = id ? path.join(DATA_ROOT, "employees", id) : "";
+  if (existsSync(idDir)) {
+    return id;
+  }
+  return username;
+}
+
+function employeeDir(employeeRef) {
+  if (employeeRef && typeof employeeRef === "object") {
+    const key = resolveEmployeeDirKey(employeeRef);
+    return path.join(DATA_ROOT, "employees", key);
+  }
+  const id = String(employeeRef ?? "").trim();
+  const store = loadStore();
+  const employee = store.employees.find((row) => row && row.id === id);
+  const key = employee ? resolveEmployeeDirKey(employee) : id;
+  return path.join(DATA_ROOT, "employees", key);
+}
+
+function employeeWorkspaceDir(id) {
+  return path.join(employeeDir(id), "workspace");
+}
+
+function employeeHomeDir(id) {
+  return path.join(employeeDir(id), "home");
+}
+
+function employeeBundledSkillsDir(id) {
+  return path.join(employeeDir(id), "bundled-skills");
 }
 
 function stopGatewayFor(id) {
@@ -644,13 +884,40 @@ function stopGatewayFor(id) {
   gatewayByEmployeeId.delete(id);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function removeDirWithRetry(dirPath, options = {}) {
+  const retries = Number.isInteger(options.retries) ? options.retries : 8;
+  const baseDelayMs = Number.isInteger(options.baseDelayMs) ? options.baseDelayMs : 150;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      await fs.rm(dirPath, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      const code = typeof err?.code === "string" ? err.code : "";
+      if (!["EBUSY", "EPERM", "ENOTEMPTY"].includes(code) || attempt === retries) {
+        throw err;
+      }
+      await sleep(baseDelayMs * (attempt + 1));
+    }
+  }
+}
+
 function startGatewayProcess(emp) {
   const id = emp.id;
   stopGatewayFor(id);
   const dir = employeeDir(id);
   const stateDir = path.join(dir, "state");
+  const workspaceDir = employeeWorkspaceDir(id);
+  const homeDir = employeeHomeDir(id);
+  const bundledSkillsDir = employeeBundledSkillsDir(id);
   const configPath = path.join(dir, "openclaw.json");
   mkdirSync(stateDir, { recursive: true });
+  mkdirSync(workspaceDir, { recursive: true });
+  mkdirSync(homeDir, { recursive: true });
+  mkdirSync(bundledSkillsDir, { recursive: true });
 
   const logPath = path.join(dir, "gateway.log");
   const logStream = createWriteStream(logPath, { flags: "a" });
@@ -668,11 +935,17 @@ function startGatewayProcess(emp) {
       "--allow-unconfigured",
     ],
     {
-      cwd: REPO_ROOT,
+      cwd: workspaceDir,
       env: {
         ...process.env,
         OPENCLAW_STATE_DIR: stateDir,
         OPENCLAW_CONFIG_PATH: configPath,
+        // Keep skill discovery private per employee gateway:
+        // - do not auto-read repo-root bundled `skills/`
+        // - isolate personal `~/.agents/skills` under employee home
+        OPENCLAW_BUNDLED_SKILLS_DIR: bundledSkillsDir,
+        HOME: homeDir,
+        USERPROFILE: homeDir,
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -969,6 +1242,28 @@ function sanitizeSkillsStatusForAdmin(raw) {
   };
 }
 
+async function fetchSkillsStatusWithRetry(params) {
+  const firstTimeoutMs = 45_000;
+  const retryTimeoutMs = 60_000;
+  try {
+    return await spawnOpenclawGatewayCall("skills.status", params.callParams, {
+      port: params.port,
+      token: params.token,
+      timeoutMs: firstTimeoutMs,
+    });
+  } catch (err) {
+    const msg = String(err?.message ?? err);
+    if (!/timeout/i.test(msg)) {
+      throw err;
+    }
+    return await spawnOpenclawGatewayCall("skills.status", params.callParams, {
+      port: params.port,
+      token: params.token,
+      timeoutMs: retryTimeoutMs,
+    });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
   const pathname = url.pathname;
@@ -1051,12 +1346,13 @@ const server = http.createServer(async (req, res) => {
         const id = crypto.randomUUID();
         const createdAt = Date.now();
         const gatewayToken = generateGatewayToken();
-        const dir = employeeDir(id);
+        const employeeRef = { id, username, dirName: username };
+        const dir = employeeDir(employeeRef);
         await fs.mkdir(dir, { recursive: true });
         const stateDir = path.join(dir, "state");
         await fs.mkdir(stateDir, { recursive: true });
 
-        const emp = { id, username, port, createdAt, gatewayToken };
+        const emp = { id, username, dirName: username, port, createdAt, gatewayToken };
         await writeEmployeeGatewayConfig(emp, { inheritMainModels });
         store.employees.push(emp);
         saveStore(store);
@@ -1088,13 +1384,14 @@ const server = http.createServer(async (req, res) => {
       if (method === "DELETE" && delMatch) {
         const id = delMatch[1];
         const store = loadStore();
+        const existing = store.employees.find((e) => e.id === id);
         const next = store.employees.filter((e) => e.id !== id);
         if (next.length === store.employees.length) {
           json(res, 404, { error: "not found" });
           return;
         }
         stopGatewayFor(id);
-        await fs.rm(employeeDir(id), { recursive: true, force: true });
+        await removeDirWithRetry(employeeDir(existing ?? id));
         store.employees = next;
         saveStore(store);
         json(res, 200, { ok: true });
@@ -1274,7 +1571,7 @@ const server = http.createServer(async (req, res) => {
 
       if (method === "GET" && pathname === "/api/employees/skills") {
         const agentId = String(url.searchParams.get("agentId") ?? "main").trim() || "main";
-        const params = { agentId };
+        const callParams = { agentId };
         const store = loadStore();
         const withStatus = attachGatewayStatus(store.employees);
         const employees = await Promise.all(
@@ -1300,7 +1597,8 @@ const server = http.createServer(async (req, res) => {
               return { ...base, ok: false, error: "未设置网关 Token", skills: null };
             }
             try {
-              const raw = await spawnOpenclawGatewayCall("skills.status", params, {
+              const raw = await fetchSkillsStatusWithRetry({
+                callParams,
                 port: emp.port,
                 token: emp.gatewayToken,
               });
@@ -1321,6 +1619,106 @@ const server = http.createServer(async (req, res) => {
           }),
         );
         json(res, 200, { agentId, employees });
+        return;
+      }
+
+      if (method === "GET" && pathname === "/api/public-skills") {
+        const skills = await listPublicSkills();
+        json(res, 200, { rootDir: PUBLIC_SKILLS_ROOT, skills });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/public-skills") {
+        const raw = await readBody(req);
+        const body = raw ? JSON.parse(raw) : {};
+        const skillId = typeof body.skillId === "string" ? body.skillId.trim() : "";
+        if (!isSafeSimpleName(skillId)) {
+          json(res, 400, { error: "技能名称仅允许字母、数字、._-，且不能为空。" });
+          return;
+        }
+        const dir = resolvePublicSkillDir(skillId);
+        if (existsSync(dir)) {
+          json(res, 400, { error: "技能已存在。" });
+          return;
+        }
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(
+          path.join(dir, "SKILL.md"),
+          `# ${skillId}\n\n请描述该技能的用途、输入与输出。\n`,
+          "utf8",
+        );
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      const publicSkillOneMatch = pathname.match(/^\/api\/public-skills\/([^/]+)$/);
+      if (method === "DELETE" && publicSkillOneMatch) {
+        const skillId = decodeURIComponent(publicSkillOneMatch[1]);
+        const dir = resolvePublicSkillDir(skillId);
+        if (!existsSync(dir)) {
+          json(res, 404, { error: "技能不存在。" });
+          return;
+        }
+        await fs.rm(dir, { recursive: true, force: true });
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      const publicSkillFileMatch = pathname.match(/^\/api\/public-skills\/([^/]+)\/file$/);
+      if (method === "GET" && publicSkillFileMatch) {
+        const skillId = decodeURIComponent(publicSkillFileMatch[1]);
+        const relPath = String(url.searchParams.get("path") ?? "").trim();
+        let filePath;
+        try {
+          filePath = resolvePublicSkillFile(skillId, relPath);
+        } catch (err) {
+          json(res, 400, { error: String(err?.message ?? err) });
+          return;
+        }
+        if (!existsSync(filePath)) {
+          json(res, 404, { error: "文件不存在。" });
+          return;
+        }
+        const raw = await fs.readFile(filePath, "utf8");
+        json(res, 200, { content: raw });
+        return;
+      }
+
+      if (method === "PUT" && publicSkillFileMatch) {
+        const skillId = decodeURIComponent(publicSkillFileMatch[1]);
+        const raw = await readBody(req);
+        const body = raw ? JSON.parse(raw) : {};
+        const relPath = typeof body.path === "string" ? body.path.trim() : "";
+        const content = typeof body.content === "string" ? body.content : "";
+        let filePath;
+        try {
+          filePath = resolvePublicSkillFile(skillId, relPath);
+        } catch (err) {
+          json(res, 400, { error: String(err?.message ?? err) });
+          return;
+        }
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.writeFile(filePath, content, "utf8");
+        json(res, 200, { ok: true });
+        return;
+      }
+
+      if (method === "DELETE" && publicSkillFileMatch) {
+        const skillId = decodeURIComponent(publicSkillFileMatch[1]);
+        const relPath = String(url.searchParams.get("path") ?? "").trim();
+        let filePath;
+        try {
+          filePath = resolvePublicSkillFile(skillId, relPath);
+        } catch (err) {
+          json(res, 400, { error: String(err?.message ?? err) });
+          return;
+        }
+        if (!existsSync(filePath)) {
+          json(res, 404, { error: "文件不存在。" });
+          return;
+        }
+        await fs.rm(filePath, { force: true });
+        json(res, 200, { ok: true });
         return;
       }
 

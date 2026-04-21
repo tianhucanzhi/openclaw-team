@@ -9,5 +9,8 @@
 在浏览器中打开 Control UI
  pnpm openclaw dashboard
 
+ 启动后端管理台
+  pnpm ui-admin:dev
+
 
  
