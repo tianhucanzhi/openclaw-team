@@ -45,6 +45,8 @@ export const pl: TranslationMap = {
     loadApprovals: "Wczytaj zatwierdzenia",
     settingsSections: "Sekcje ustawień",
     version: "Wersja",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "Dokumentacja",
     theme: "Motyw",
     resources: "Zasoby",

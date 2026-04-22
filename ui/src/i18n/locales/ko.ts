@@ -45,6 +45,8 @@ export const ko: TranslationMap = {
     loadApprovals: "승인 로드",
     settingsSections: "설정 섹션",
     version: "버전",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "문서",
     theme: "테마",
     resources: "리소스",

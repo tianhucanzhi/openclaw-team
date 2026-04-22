@@ -278,6 +278,13 @@
     flex: 1;
   }
 
+  .topbar-user {
+    max-width: 120px;
+    flex-shrink: 1;
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+
   .topbar-theme-mode {
     display: none;
   }

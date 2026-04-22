@@ -117,6 +117,20 @@
   flex-shrink: 0;
 }
 
+.topbar-user {
+  max-width: 200px;
+  padding: 6px 10px;
+  border-radius: var(--radius-full, 999px);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  background: color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg-muted, var(--muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .topnav-shell__content {
   min-width: 0;
   flex: 1;

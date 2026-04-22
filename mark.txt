@@ -13,4 +13,22 @@
   pnpm ui-admin:dev
 
 
+  ui目录修改后一定要执行（ pnpm build 不能省略）
+  pnpm build && pnpm ui:build
+
+
+
+你要用局域网打开 主网关 18789
+在主配置 openclaw.json（常见为 ~/.openclaw/openclaw.json）里增加或修改，例如：
+
+"gateway": {
+  "bind": "lan",
+  "port": 18789,
+  "auth": {
+    "mode": "token",
+    "token": "你的随机长密钥"
+  }
+}
+bind 设为 lan（或 auto）后，才会在局域网网卡上监听。
+
  

@@ -45,6 +45,8 @@ export const fr: TranslationMap = {
     loadApprovals: "Charger les approbations",
     settingsSections: "Sections des paramètres",
     version: "Version",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "Documentation",
     theme: "Thème",
     resources: "Ressources",

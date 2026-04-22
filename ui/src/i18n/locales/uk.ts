@@ -45,6 +45,8 @@ export const uk: TranslationMap = {
     loadApprovals: "Завантажити схвалення",
     settingsSections: "Розділи налаштувань",
     version: "Версія",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "Документація",
     theme: "Тема",
     resources: "Ресурси",

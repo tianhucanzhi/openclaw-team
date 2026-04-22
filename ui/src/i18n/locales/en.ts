@@ -44,6 +44,10 @@ export const en: TranslationMap = {
     loadApprovals: "Load approvals",
     settingsSections: "Settings sections",
     version: "Version",
+    /** Sidebar footer when portal employee / URL user is known (enterprise Control UI). */
+    enterprisePortalVersion: "Enterprise — {account}",
+    /** Sidebar footer when no per-user label (still enterprise build; never show raw semver here). */
+    enterprisePortalOnly: "Enterprise",
     docs: "Docs",
     theme: "Theme",
     resources: "Resources",

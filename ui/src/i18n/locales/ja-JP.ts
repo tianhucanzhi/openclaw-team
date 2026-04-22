@@ -45,6 +45,8 @@ export const ja_JP: TranslationMap = {
     loadApprovals: "承認を読み込み",
     settingsSections: "設定セクション",
     version: "バージョン",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "ドキュメント",
     theme: "テーマ",
     resources: "リソース",

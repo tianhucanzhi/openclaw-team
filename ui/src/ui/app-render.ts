@@ -20,6 +20,7 @@ import {
 } from "./app-render.helpers.ts";
 import { warnQueryToken } from "./app-settings.ts";
 import type { AppViewState } from "./app-view-state.ts";
+import { resolveGatewayUserLabelFromToken } from "./gateway-user-display.ts";
 import { loadAgentFileContent, loadAgentFiles, saveAgentFile } from "./controllers/agent-files.ts";
 import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
 import { loadAgentSkills } from "./controllers/agent-skills.ts";
@@ -117,6 +118,7 @@ import "./components/dashboard-header.ts";
 import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
 import { icons } from "./icons.ts";
 import { normalizeBasePath, TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation.ts";
+import { normalizeOptionalString } from "./string-coerce.ts";
 import { agentLogoUrl } from "./views/agents-utils.ts";
 import {
   resolveAgentConfig,
@@ -421,6 +423,9 @@ export function renderApp(state: AppViewState) {
   const navCollapsed = state.settings.navCollapsed && !navDrawerOpen;
   const showThinking = state.onboarding ? false : state.settings.chatShowThinking;
   const showToolCalls = state.onboarding ? true : state.settings.chatShowToolCalls;
+  const gatewayHeaderUserLabel =
+    normalizeOptionalString(state.gatewayDisplayUser) ??
+    resolveGatewayUserLabelFromToken(state.settings.token);
   const assistantAvatarUrl = resolveAssistantAvatarUrl(state);
   const chatAvatarUrl = state.chatAvatarUrl ?? assistantAvatarUrl ?? null;
   const configValue =
@@ -877,6 +882,11 @@ export function renderApp(state: AppViewState) {
             <dashboard-header .tab=${state.tab}></dashboard-header>
           </div>
           <div class="topnav-shell__actions">
+            ${gatewayHeaderUserLabel
+              ? html`<span class="topbar-user" title=${gatewayHeaderUserLabel}
+                  >${gatewayHeaderUserLabel}</span
+                >`
+              : nothing}
             <button
               class="topbar-search"
               @click=${() => {
@@ -989,20 +999,23 @@ export function renderApp(state: AppViewState) {
                 </a>
                 <div class="sidebar-mode-switch">${renderTopbarThemeModeToggle(state)}</div>
                 ${(() => {
-                  const version = state.hello?.server?.version ?? "";
-                  return version
-                    ? html`
-                        <div class="sidebar-version" title=${`v${version}`}>
-                          ${!navCollapsed
-                            ? html`
-                                <span class="sidebar-version__label">${t("common.version")}</span>
-                                <span class="sidebar-version__text">v${version}</span>
-                                ${renderSidebarConnectionStatus(state)}
-                              `
-                            : html` ${renderSidebarConnectionStatus(state)} `}
-                        </div>
-                      `
-                    : nothing;
+                  const portalAccount =
+                    normalizeOptionalString(state.gatewayDisplayUser) ??
+                    resolveGatewayUserLabelFromToken(state.settings.token);
+                  const versionText = portalAccount
+                    ? t("common.enterprisePortalVersion", { account: portalAccount })
+                    : t("common.enterprisePortalOnly");
+                  return html`
+                    <div class="sidebar-version" title=${versionText}>
+                      ${!navCollapsed
+                        ? html`
+                            <span class="sidebar-version__label">${t("common.version")}</span>
+                            <span class="sidebar-version__text">${versionText}</span>
+                            ${renderSidebarConnectionStatus(state)}
+                          `
+                        : html` ${renderSidebarConnectionStatus(state)} `}
+                    </div>
+                  `;
                 })()}
               </div>
             </div>

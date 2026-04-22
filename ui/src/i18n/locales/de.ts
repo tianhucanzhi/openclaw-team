@@ -45,6 +45,8 @@ export const de: TranslationMap = {
     loadApprovals: "Freigaben laden",
     settingsSections: "Einstellungsabschnitte",
     version: "Version",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "Dokumentation",
     theme: "Design",
     resources: "Ressourcen",

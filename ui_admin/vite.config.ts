@@ -12,7 +12,8 @@ export default defineConfig({
     sourcemap: true,
   },
   server: {
-    host: "127.0.0.1",
+    // Listen on all interfaces so LAN devices can open http://<host>:5174 (same as ui/).
+    host: true,
     port: 5174,
     strictPort: false,
     proxy: {

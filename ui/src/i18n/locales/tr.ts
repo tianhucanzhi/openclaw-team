@@ -45,6 +45,8 @@ export const tr: TranslationMap = {
     loadApprovals: "Onayları yükle",
     settingsSections: "Ayar bölümleri",
     version: "Sürüm",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "Dokümanlar",
     theme: "Tema",
     resources: "Kaynaklar",

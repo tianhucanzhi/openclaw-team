@@ -45,6 +45,8 @@ export const id: TranslationMap = {
     loadApprovals: "Muat persetujuan",
     settingsSections: "Bagian pengaturan",
     version: "Versi",
+    enterprisePortalVersion: "Enterprise — {account}",
+    enterprisePortalOnly: "Enterprise",
     docs: "Dokumen",
     theme: "Tema",
     resources: "Sumber daya",

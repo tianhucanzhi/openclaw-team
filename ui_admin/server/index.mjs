@@ -21,6 +21,16 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const OPENCLAW_ENTRY = path.join(REPO_ROOT, "openclaw.mjs");
+/** Matches `openclaw.mjs` bootstrap (dist/entry.js or dist/entry.mjs). */
+function isOpenclawDistEntryPresent() {
+  const entryJs = path.join(REPO_ROOT, "dist", "entry.js");
+  const entryMjs = path.join(REPO_ROOT, "dist", "entry.mjs");
+  try {
+    return existsSync(entryJs) || existsSync(entryMjs);
+  } catch {
+    return false;
+  }
+}
 const STATIC_ROOT = path.join(REPO_ROOT, "dist", "ui-admin");
 const PUBLIC_SKILLS_ROOT = path.join(REPO_ROOT, "skills");
 
@@ -653,6 +663,16 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
   const workspaceDir = employeeWorkspaceDir(emp);
   const configPath = path.join(dir, "openclaw.json");
   const token = typeof emp.gatewayToken === "string" ? emp.gatewayToken.trim() : "";
+  const bindEnvRaw =
+    typeof process.env.OPENCLAW_ADMIN_EMPLOYEE_GATEWAY_BIND === "string"
+      ? process.env.OPENCLAW_ADMIN_EMPLOYEE_GATEWAY_BIND.trim().toLowerCase()
+      : "";
+  const bindAllowed = new Set(["loopback", "lan", "auto"]);
+  let gatewayBind = bindAllowed.has(bindEnvRaw) ? bindEnvRaw : token ? "lan" : "loopback";
+  // Non-loopback binds require gateway auth; keep loopback when no token.
+  if (!token && gatewayBind !== "loopback") {
+    gatewayBind = "loopback";
+  }
 
   /** @type {Record<string, unknown>} */
   let cfg = {};
@@ -675,9 +695,23 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
   const mainCfg = await loadMainOpenclawJson();
 
   const prevGw = cfg.gateway && typeof cfg.gateway === "object" ? cfg.gateway : {};
+  const prevControlUi =
+    prevGw.controlUi && typeof prevGw.controlUi === "object" ? { ...prevGw.controlUi } : {};
+  // LAN/auto bind:
+  // - Origin allowlist defaults to localhost/127.0.0.1 only; Host-header fallback allows http://<lan-ip>:<port>.
+  // - Plain HTTP on a LAN IP is not a secure context: browsers cannot use device identity (SubtleCrypto).
+  //   dangerouslyDisableDeviceAuth lets token-authenticated Control UI operators connect without device keys.
+  const enableLanControlUiRelaxations = gatewayBind === "lan" || gatewayBind === "auto";
+  const enableControlUiOriginFallback =
+    enableLanControlUiRelaxations &&
+    prevControlUi.dangerouslyAllowHostHeaderOriginFallback !== false;
+  const enableControlUiDisableDeviceAuth =
+    enableLanControlUiRelaxations && prevControlUi.dangerouslyDisableDeviceAuth !== false;
+
   cfg.gateway = {
     ...prevGw,
     mode: "local",
+    bind: gatewayBind,
     ...(token
       ? {
           auth: {
@@ -686,6 +720,13 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
           },
         }
       : {}),
+    controlUi: {
+      ...prevControlUi,
+      ...(enableControlUiOriginFallback
+        ? { dangerouslyAllowHostHeaderOriginFallback: true }
+        : {}),
+      ...(enableControlUiDisableDeviceAuth ? { dangerouslyDisableDeviceAuth: true } : {}),
+    },
   };
 
   // Keep employee gateways on isolated workspaces.
@@ -905,9 +946,17 @@ async function removeDirWithRetry(dirPath, options = {}) {
   }
 }
 
-function startGatewayProcess(emp) {
+async function startGatewayProcess(emp) {
   const id = emp.id;
   stopGatewayFor(id);
+  if (!existsSync(OPENCLAW_ENTRY)) {
+    throw new Error(`未找到 OpenClaw 入口: ${OPENCLAW_ENTRY}`);
+  }
+  if (!isOpenclawDistEntryPresent()) {
+    throw new Error(
+      "OpenClaw 构建产物缺失：仓库根目录下没有 dist/entry.mjs（或 dist/entry.js）。请在仓库根目录执行 pnpm install && pnpm build 后再启动员工网关。",
+    );
+  }
   const dir = employeeDir(id);
   const stateDir = path.join(dir, "state");
   const workspaceDir = employeeWorkspaceDir(id);
@@ -919,6 +968,8 @@ function startGatewayProcess(emp) {
   mkdirSync(homeDir, { recursive: true });
   mkdirSync(bundledSkillsDir, { recursive: true });
 
+  await writeEmployeeGatewayConfig(emp, { mergeIntoExisting: true, inheritMainModels: false });
+
   const logPath = path.join(dir, "gateway.log");
   const logStream = createWriteStream(logPath, { flags: "a" });
   logStream.write(`\n--- gateway start ${new Date().toISOString()} port=${emp.port} ---\n`);
@@ -928,8 +979,6 @@ function startGatewayProcess(emp) {
     [
       OPENCLAW_ENTRY,
       "gateway",
-      "--bind",
-      "loopback",
       "--port",
       String(emp.port),
       "--allow-unconfigured",
@@ -1160,6 +1209,118 @@ function sanitizeAggDimRow(row) {
   return Object.keys(o).length > 0 ? o : null;
 }
 
+function emptyUsageTotalsRow() {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: 0,
+    totalCost: 0,
+    inputCost: 0,
+    outputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    missingCostEntries: 0,
+  };
+}
+
+function mergeUsageTotalsInto(target, u) {
+  if (!u || typeof u !== "object") {
+    return;
+  }
+  for (const k of Object.keys(emptyUsageTotalsRow())) {
+    const v = u[k];
+    if (typeof v === "number" && Number.isFinite(v)) {
+      target[k] += v;
+    }
+  }
+}
+
+/**
+ * When gateway `aggregates.byModel` / `byProvider` are empty (common when per-session `modelUsage`
+ * is absent but flat `usage.totalTokens` still rolls up), derive dimensions from `sessions[]`.
+ */
+function rollupUsageAggregatesFromSessions(raw) {
+  const sessions = Array.isArray(raw?.sessions) ? raw.sessions : [];
+  /** @type {Map<string, { provider: string; model: string; count: number; totals: ReturnType<typeof emptyUsageTotalsRow> }>} */
+  const byModel = new Map();
+  /** @type {Map<string, { provider: string; model: undefined; count: number; totals: ReturnType<typeof emptyUsageTotalsRow> }>} */
+  const byProvider = new Map();
+  for (const s of sessions) {
+    if (!s || typeof s !== "object") {
+      continue;
+    }
+    const u = s.usage;
+    if (!u || typeof u !== "object") {
+      continue;
+    }
+    const tt = typeof u.totalTokens === "number" && Number.isFinite(u.totalTokens) ? u.totalTokens : 0;
+    const tc = typeof u.totalCost === "number" && Number.isFinite(u.totalCost) ? u.totalCost : 0;
+    if (tt <= 0 && tc <= 0) {
+      continue;
+    }
+    const origin = s.origin && typeof s.origin === "object" ? s.origin : null;
+    const prov =
+      String(s.modelProvider ?? s.providerOverride ?? origin?.provider ?? "").trim() || "unknown";
+    const mod = String(s.model ?? s.modelOverride ?? "").trim() || "—";
+    const mKey = `${prov}|||${mod}`;
+    if (!byModel.has(mKey)) {
+      byModel.set(mKey, { provider: prov, model: mod, count: 0, totals: emptyUsageTotalsRow() });
+    }
+    const mRow = byModel.get(mKey);
+    mRow.count += 1;
+    mergeUsageTotalsInto(mRow.totals, u);
+
+    if (!byProvider.has(prov)) {
+      byProvider.set(prov, { provider: prov, model: undefined, count: 0, totals: emptyUsageTotalsRow() });
+    }
+    const pRow = byProvider.get(prov);
+    pRow.count += 1;
+    mergeUsageTotalsInto(pRow.totals, u);
+  }
+  return {
+    byModel: Array.from(byModel.values()).sort((a, b) => (b.totals.totalTokens ?? 0) - (a.totals.totalTokens ?? 0)),
+    byProvider: Array.from(byProvider.values()).sort(
+      (a, b) => (b.totals.totalTokens ?? 0) - (a.totals.totalTokens ?? 0),
+    ),
+  };
+}
+
+function mergeUsageAggregatesFromSessionsIfNeeded(raw, sanitized) {
+  if (!sanitized || typeof sanitized !== "object") {
+    return sanitized;
+  }
+  const agg = sanitized.aggregates;
+  if (!agg || typeof agg !== "object") {
+    return sanitized;
+  }
+  const hasM = Array.isArray(agg.byModel) && agg.byModel.length > 0;
+  const hasP = Array.isArray(agg.byProvider) && agg.byProvider.length > 0;
+  if (hasM && hasP) {
+    return sanitized;
+  }
+  const rolled = rollupUsageAggregatesFromSessions(raw);
+  const byModelNext = hasM
+    ? agg.byModel
+    : rolled.byModel.length > 0
+      ? rolled.byModel.map((row) => sanitizeAggDimRow(row)).filter(Boolean).slice(0, 60)
+      : agg.byModel;
+  const byProvNext = hasP
+    ? agg.byProvider
+    : rolled.byProvider.length > 0
+      ? rolled.byProvider.map((row) => sanitizeAggDimRow(row)).filter(Boolean).slice(0, 40)
+      : agg.byProvider;
+  return {
+    ...sanitized,
+    aggregates: {
+      ...agg,
+      byModel: byModelNext,
+      byProvider: byProvNext,
+    },
+  };
+}
+
 function sanitizeSessionsUsageForAdmin(raw) {
   if (!raw || typeof raw !== "object") {
     return null;
@@ -1202,8 +1363,15 @@ function sanitizeSessionsUsageForAdmin(raw) {
         ? agg.byAgent.map(sanitizeAggDimRow).filter(Boolean).slice(0, 16)
         : [],
     };
+  } else if (!out.aggregates) {
+    out.aggregates = {
+      byProvider: [],
+      byModel: [],
+      byChannel: [],
+      byAgent: [],
+    };
   }
-  return out;
+  return mergeUsageAggregatesFromSessionsIfNeeded(raw, out);
 }
 
 function sanitizeSkillsStatusForAdmin(raw) {
@@ -1364,7 +1532,7 @@ const server = http.createServer(async (req, res) => {
             return;
           }
           try {
-            startGatewayProcess(emp);
+            await startGatewayProcess(emp);
             gatewayStarted = true;
           } catch (err) {
             json(res, 500, { error: String(err?.message ?? err) });
@@ -1415,7 +1583,7 @@ const server = http.createServer(async (req, res) => {
         if (wasRunning) {
           stopGatewayFor(id);
           try {
-            startGatewayProcess(emp);
+            await startGatewayProcess(emp);
           } catch (err) {
             json(res, 500, { error: String(err?.message ?? err) });
             return;
@@ -1442,7 +1610,7 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         try {
-          startGatewayProcess(emp);
+          await startGatewayProcess(emp);
         } catch (err) {
           json(res, 500, { error: String(err?.message ?? err) });
           return;

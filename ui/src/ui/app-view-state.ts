@@ -114,6 +114,8 @@ export type AppViewState = {
   execApprovalBusy: boolean;
   execApprovalError: string | null;
   pendingGatewayUrl: string | null;
+  /** Top bar user label: URL `user` / `username` / `employee`, else JWT token claims. */
+  gatewayDisplayUser: string | null;
   configLoading: boolean;
   configRaw: string;
   configRawOriginal: string;

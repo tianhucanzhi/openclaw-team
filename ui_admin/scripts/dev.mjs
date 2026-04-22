@@ -34,9 +34,15 @@ function resolveViteBin() {
   }
 }
 
+const serverEnv = { ...process.env };
+// Allow the admin API to accept connections from the LAN when unset (Vite proxies /api from the same machine).
+if (!serverEnv.OPENCLAW_ADMIN_BIND) {
+  serverEnv.OPENCLAW_ADMIN_BIND = "0.0.0.0";
+}
+
 const server = spawn(process.execPath, [serverEntry], {
   stdio: "inherit",
-  env: { ...process.env },
+  env: serverEnv,
 });
 
 function wait(ms) {

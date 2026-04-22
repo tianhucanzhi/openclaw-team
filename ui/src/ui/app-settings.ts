@@ -48,6 +48,7 @@ import {
   type Tab,
 } from "./navigation.ts";
 import { saveSettings, type UiSettings } from "./storage.ts";
+import { sanitizeGatewayUserDisplayLabel } from "./gateway-user-display.ts";
 import { normalizeOptionalString } from "./string-coerce.ts";
 import { startThemeTransition, type ThemeTransitionContext } from "./theme-transition.ts";
 import { resolveTheme, type ResolvedTheme, type ThemeMode, type ThemeName } from "./theme.ts";
@@ -77,6 +78,8 @@ type SettingsHost = {
   pendingGatewayUrl?: string | null;
   systemThemeCleanup?: (() => void) | null;
   pendingGatewayToken?: string | null;
+  /** From URL `#user=` / `#username=` / `#employee=` (enterprise deep links). */
+  gatewayDisplayUser?: string | null;
   dreamingStatusLoading: boolean;
   dreamingStatusError: string | null;
   dreamingStatus: import("./controllers/dreaming.js").DreamingStatus | null;
@@ -163,6 +166,42 @@ export function applySettingsFromUrl(host: SettingsHost) {
   const session = normalizeOptionalString(params.get("session") ?? hashParams.get("session"));
   const shouldResetSessionForToken = Boolean(token && !session && !gatewayUrlChanged);
   let shouldCleanUrl = false;
+
+  const readDisplayUserParam = (): string | null => {
+    const fromHash = normalizeOptionalString(
+      hashParams.get("user") ?? hashParams.get("username") ?? hashParams.get("employee"),
+    );
+    if (fromHash) {
+      return sanitizeGatewayUserDisplayLabel(fromHash);
+    }
+    const fromQuery = normalizeOptionalString(
+      params.get("user") ?? params.get("username") ?? params.get("employee"),
+    );
+    return sanitizeGatewayUserDisplayLabel(fromQuery);
+  };
+
+  const stripDisplayUserParams = (): boolean => {
+    let removed = false;
+    for (const key of ["user", "username", "employee"] as const) {
+      if (params.has(key)) {
+        params.delete(key);
+        removed = true;
+      }
+      if (hashParams.has(key)) {
+        hashParams.delete(key);
+        removed = true;
+      }
+    }
+    return removed;
+  };
+
+  const displayUserFromUrl = readDisplayUserParam();
+  if (displayUserFromUrl) {
+    host.gatewayDisplayUser = displayUserFromUrl;
+  }
+  if (stripDisplayUserParams()) {
+    shouldCleanUrl = true;
+  }
 
   if (params.has("token")) {
     params.delete("token");

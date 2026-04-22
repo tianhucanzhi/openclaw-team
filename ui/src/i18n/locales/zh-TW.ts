@@ -45,6 +45,8 @@ export const zh_TW: TranslationMap = {
     loadApprovals: "載入核准項目",
     settingsSections: "設定區段",
     version: "版本",
+    enterprisePortalVersion: "企業版-{account}",
+    enterprisePortalOnly: "企業版",
     docs: "文檔",
     theme: "主題",
     resources: "資源",

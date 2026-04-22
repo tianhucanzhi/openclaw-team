@@ -214,6 +214,8 @@ export class OpenClawApp extends LitElement {
   @state() execApprovalBusy = false;
   @state() execApprovalError: string | null = null;
   @state() pendingGatewayUrl: string | null = null;
+  /** Shown in top bar; set from URL `#user=` / JWT-shaped gateway token. */
+  @state() gatewayDisplayUser: string | null = null;
   pendingGatewayToken: string | null = null;
 
   @state() configLoading = false;

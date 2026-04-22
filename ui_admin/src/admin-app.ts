@@ -33,6 +33,118 @@ const ICON_INFO = html`<svg
   <path d="M12 8h.01"></path>
 </svg>`;
 
+const EMPLOYEE_PORTAL_LINK_PREFS_KEY = "openclaw.admin.employeePortalLinkPrefs.v1";
+
+type EmployeePortalLinkPrefs = {
+  host: string;
+  useTls: boolean;
+  pathPrefix: string;
+  /** If set, used as page URL; include `{port}` unless fixed URL (see wsHost). */
+  pageUrlTemplate: string;
+  /** When pageUrlTemplate has no `{port}`, WebSocket host for hash (default: same as host). */
+  wsHost: string;
+};
+
+function normalizeEmployeePathPrefix(raw: string): string {
+  let s = raw.trim();
+  if (!s) {
+    return "";
+  }
+  if (!s.startsWith("/")) {
+    s = `/${s}`;
+  }
+  return s.replace(/\/+$/, "") || "";
+}
+
+function loadEmployeePortalLinkPrefs(): EmployeePortalLinkPrefs {
+  const defaults: EmployeePortalLinkPrefs = {
+    host: "127.0.0.1",
+    useTls: false,
+    pathPrefix: "",
+    pageUrlTemplate: "",
+    wsHost: "",
+  };
+  if (typeof localStorage === "undefined") {
+    return defaults;
+  }
+  try {
+    const raw = localStorage.getItem(EMPLOYEE_PORTAL_LINK_PREFS_KEY);
+    if (!raw) {
+      return defaults;
+    }
+    const o = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      host: typeof o.host === "string" && o.host.trim() ? o.host.trim() : defaults.host,
+      useTls: o.useTls === true,
+      pathPrefix: typeof o.pathPrefix === "string" ? o.pathPrefix : "",
+      pageUrlTemplate: typeof o.pageUrlTemplate === "string" ? o.pageUrlTemplate : "",
+      wsHost: typeof o.wsHost === "string" ? o.wsHost : "",
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+function saveEmployeePortalLinkPrefs(prefs: EmployeePortalLinkPrefs): void {
+  if (typeof localStorage === "undefined") {
+    return;
+  }
+  try {
+    localStorage.setItem(EMPLOYEE_PORTAL_LINK_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Clipboard API only works in secure contexts (https / localhost). Admin UI is often opened via
+ * http://LAN; use execCommand fallback so copy buttons still work.
+ */
+async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    /* fall through */
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+/** When copying portal links, align host (and http/https) with how the admin UI is opened. */
+function resolveAdminPortalHostForCopy(): { host: string; useTls: boolean } | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const host = window.location.hostname?.trim();
+  if (!host) {
+    return null;
+  }
+  return { host, useTls: window.location.protocol === "https:" };
+}
+
+function isLoopbackUrlHost(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "[::1]";
+}
+
 type Employee = {
   id: string;
   username: string;
@@ -239,6 +351,18 @@ export class OpenClawAdminApp extends LitElement {
     publicFileContentDraft: { state: true },
     publicNewSkillId: { state: true },
     publicNewFilePath: { state: true },
+    dashLoading: { state: true },
+    dashError: { state: true },
+    dashboardUsage: { state: true },
+    dashboardSkills: { state: true },
+    dashboardPublicSkillCount: { state: true },
+    dashboardMainPrimary: { state: true },
+    dashboardProviderKeysConfigured: { state: true },
+    portalLinkHost: { state: true },
+    portalLinkUseTls: { state: true },
+    portalLinkPathPrefix: { state: true },
+    portalLinkPageTemplate: { state: true },
+    portalLinkWsHost: { state: true },
   };
 
   session: "unknown" | "admin" | "none" = "unknown";
@@ -257,7 +381,7 @@ export class OpenClawAdminApp extends LitElement {
   /** Shown once after create/regenerate so admin can copy before navigating away. */
   highlightGatewayToken: string | null = null;
   /** Post-login sidebar section (extensible). */
-  adminNav: "employees" | "models" | "usage" | "skills" | "publicSkills" = "employees";
+  adminNav: "dashboard" | "employees" | "models" | "usage" | "skills" | "publicSkills" = "dashboard";
   modelsLoading = false;
   modelsError: string | null = null;
   modelsOk: string | null = null;
@@ -284,6 +408,19 @@ export class OpenClawAdminApp extends LitElement {
   publicFileContentDraft = "";
   publicNewSkillId = "";
   publicNewFilePath = "";
+  dashLoading = false;
+  dashError: string | null = null;
+  dashboardUsage: UsagePayload | null = null;
+  dashboardSkills: SkillsPayload | null = null;
+  dashboardPublicSkillCount = 0;
+  dashboardMainPrimary = "";
+  dashboardProviderKeysConfigured = 0;
+  /** Prefs for “copy employee portal link”; persisted in localStorage. */
+  portalLinkHost = "127.0.0.1";
+  portalLinkUseTls = false;
+  portalLinkPathPrefix = "";
+  portalLinkPageTemplate = "";
+  portalLinkWsHost = "";
 
   static styles = css`
     :host {
@@ -959,6 +1096,243 @@ export class OpenClawAdminApp extends LitElement {
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
+
+    /* ----- Dashboard ----- */
+    .dash-wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .dash-hero {
+      position: relative;
+      border-radius: 16px;
+      padding: 22px 26px 20px;
+      margin-bottom: 20px;
+      overflow: hidden;
+      background: linear-gradient(135deg, rgba(232, 93, 76, 0.14) 0%, rgba(30, 58, 95, 0.35) 45%, rgba(12, 14, 22, 0.9) 100%);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    }
+    .dash-hero::before {
+      content: "";
+      position: absolute;
+      inset: -40%;
+      background: conic-gradient(from 120deg, transparent 0%, rgba(232, 93, 76, 0.12) 25%, transparent 50%, rgba(96, 165, 250, 0.1) 75%, transparent 100%);
+      animation: dash-spin 18s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes dash-spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+    .dash-hero__inner {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .dash-hero h2 {
+      margin: 0 0 6px;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #f1f3f5;
+    }
+    .dash-hero p {
+      margin: 0;
+      font-size: 0.86rem;
+      color: #9aa3b2;
+      max-width: 36rem;
+      line-height: 1.5;
+    }
+    .dash-hero__meta {
+      font-size: 0.75rem;
+      color: #7d8496;
+      font-variant-numeric: tabular-nums;
+    }
+    .dash-kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .dash-kpi {
+      border-radius: 12px;
+      padding: 14px 16px;
+      background: rgba(18, 21, 30, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      position: relative;
+      overflow: hidden;
+    }
+    .dash-kpi::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--login-accent), #60a5fa, transparent);
+      opacity: 0.85;
+    }
+    .dash-kpi__label {
+      font-size: 0.72rem;
+      color: #8b93a4;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 6px;
+    }
+    .dash-kpi__val {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #f1f3f5;
+      font-variant-numeric: tabular-nums;
+    }
+    .dash-kpi__sub {
+      margin-top: 4px;
+      font-size: 0.72rem;
+      color: #6b7280;
+    }
+    .dash-charts {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .dash-panel {
+      border-radius: 14px;
+      padding: 16px 18px;
+      background: rgba(18, 21, 30, 0.72);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      min-height: 200px;
+    }
+    .dash-panel h3 {
+      margin: 0 0 12px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: #e8eaed;
+    }
+    .dash-panel .sub {
+      margin: -6px 0 12px;
+      font-size: 0.75rem;
+    }
+    .dash-svg-wrap {
+      width: 100%;
+      overflow: hidden;
+    }
+    .dash-svg-wrap svg {
+      width: 100%;
+      height: auto;
+      display: block;
+    }
+    .dash-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      margin-top: 10px;
+      font-size: 0.72rem;
+      color: #9aa3b2;
+    }
+    .dash-legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .dash-legend i {
+      width: 8px;
+      height: 8px;
+      border-radius: 2px;
+      display: inline-block;
+    }
+    .dash-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+      flex-wrap: wrap;
+    }
+    .dash-mini-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-size: 0.78rem;
+      color: #b8c0cc;
+    }
+    .dash-mini-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 6px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .dash-mini-list li:last-child {
+      border-bottom: none;
+    }
+    .dash-mini-list .num {
+      font-variant-numeric: tabular-nums;
+      color: #e8eaed;
+    }
+    .dash-donut-ring {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: conic-gradient(from -90deg, #34d399 0deg, #34d399 var(--dash-pct, 0deg), rgba(61, 72, 88, 0.95) 0deg);
+      position: relative;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+    }
+    .dash-donut-ring::after {
+      content: "";
+      position: absolute;
+      inset: 24px;
+      border-radius: 50%;
+      background: #12151c;
+    }
+    .dash-html-bars {
+      margin-top: 4px;
+    }
+    .dash-bar-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+      font-size: 0.78rem;
+    }
+    .dash-bar-row__label {
+      width: 92px;
+      flex-shrink: 0;
+      color: #9aa3b2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .dash-bar-row__track {
+      flex: 1;
+      height: 14px;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+      min-width: 0;
+    }
+    .dash-bar-row__fill {
+      height: 100%;
+      border-radius: 6px;
+      min-width: 2px;
+      transition: width 0.4s ease;
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+    }
+    .dash-bar-row__val {
+      width: 76px;
+      flex-shrink: 0;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: #e8eaed;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.72rem;
+    }
+
     .split {
       display: grid;
       grid-template-columns: minmax(260px, 340px) 1fr;
@@ -1007,18 +1381,81 @@ export class OpenClawAdminApp extends LitElement {
       font-size: 0.8rem;
       line-height: 1.45;
     }
+    .portal-prefs {
+      margin: 0 0 18px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(0, 0, 0, 0.22);
+    }
+    .portal-prefs > summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: #e8eaed;
+    }
+    .portal-prefs__grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px 16px;
+      margin-top: 12px;
+    }
+    .portal-prefs__grid label {
+      display: block;
+      font-size: 0.78rem;
+      color: #9aa0a6;
+      margin-bottom: 4px;
+    }
+    .portal-prefs__grid input[type="text"] {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .portal-prefs__row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 0.85rem;
+      color: #c5cad3;
+    }
+    .portal-prefs__hint {
+      margin: 10px 0 0;
+      font-size: 0.78rem;
+      color: #7d8490;
+      line-height: 1.45;
+    }
   `;
 
   connectedCallback(): void {
     super.connectedCallback();
+    this.applyPortalLinkPrefsFromStorage();
     void this.refreshSession();
+  }
+
+  private applyPortalLinkPrefsFromStorage(): void {
+    const p = loadEmployeePortalLinkPrefs();
+    this.portalLinkHost = p.host;
+    this.portalLinkUseTls = p.useTls;
+    this.portalLinkPathPrefix = p.pathPrefix;
+    this.portalLinkPageTemplate = p.pageUrlTemplate;
+    this.portalLinkWsHost = p.wsHost;
+  }
+
+  private persistPortalLinkPrefs(): void {
+    saveEmployeePortalLinkPrefs({
+      host: this.portalLinkHost.trim() || "127.0.0.1",
+      useTls: this.portalLinkUseTls,
+      pathPrefix: this.portalLinkPathPrefix,
+      pageUrlTemplate: this.portalLinkPageTemplate,
+      wsHost: this.portalLinkWsHost,
+    });
   }
 
   private async refreshSession() {
     const r = await api<{ role: string }>("/api/session");
     if (r.ok && r.data?.role === "admin") {
       this.session = "admin";
-      void this.loadEmployees();
+      this.adminNav = "dashboard";
+      void this.loadEmployees().then(() => this.loadDashboardData());
     } else {
       this.session = "none";
     }
@@ -1049,7 +1486,8 @@ export class OpenClawAdminApp extends LitElement {
     }
     this.loginPass = "";
     this.session = "admin";
-    void this.loadEmployees();
+    this.adminNav = "dashboard";
+    void this.loadEmployees().then(() => this.loadDashboardData());
   }
 
   private async onLogout() {
@@ -1086,7 +1524,14 @@ export class OpenClawAdminApp extends LitElement {
     this.publicFileContentDraft = "";
     this.publicNewSkillId = "";
     this.publicNewFilePath = "";
-    this.adminNav = "employees";
+    this.dashLoading = false;
+    this.dashError = null;
+    this.dashboardUsage = null;
+    this.dashboardSkills = null;
+    this.dashboardPublicSkillCount = 0;
+    this.dashboardMainPrimary = "";
+    this.dashboardProviderKeysConfigured = 0;
+    this.adminNav = "dashboard";
   }
 
   private async onCreate(e: Event) {
@@ -1162,11 +1607,79 @@ export class OpenClawAdminApp extends LitElement {
   private async copyGatewayToken(token: string) {
     this.listError = null;
     this.formOk = null;
-    try {
-      await navigator.clipboard.writeText(token);
+    const ok = await copyTextToClipboard(token);
+    if (ok) {
       this.formOk = "已复制网关 Token。";
-    } catch {
+    } else {
       this.listError = "复制失败，请手动选择 Token 文本。";
+    }
+  }
+
+  /** Control UI deep link: page URL + `#gatewayUrl=&token=&user=` (fragment). */
+  private buildEmployeePortalUrl(
+    emp: Employee,
+    opts?: { matchAdminHost?: boolean },
+  ): string | null {
+    const token = typeof emp.gatewayToken === "string" ? emp.gatewayToken.trim() : "";
+    if (!token) {
+      return null;
+    }
+    const admin = opts?.matchAdminHost ? resolveAdminPortalHostForCopy() : null;
+    const host = admin?.host ?? (this.portalLinkHost.trim() || "127.0.0.1");
+    const wsHost = admin
+      ? admin.host
+      : ((this.portalLinkWsHost.trim() || host).trim() || "127.0.0.1");
+    const useTls = admin?.useTls ?? this.portalLinkUseTls;
+    const prefix = normalizeEmployeePathPrefix(this.portalLinkPathPrefix);
+    const wsProto = useTls ? "wss" : "ws";
+    const gatewayUrl = `${wsProto}://${wsHost}:${emp.port}${prefix}`;
+    const user = emp.username.trim() || emp.username;
+
+    const hash = new URLSearchParams();
+    hash.set("gatewayUrl", gatewayUrl);
+    hash.set("token", token);
+    hash.set("user", user);
+
+    const tmpl = this.portalLinkPageTemplate.trim();
+    let pageUrl: string;
+    if (tmpl) {
+      pageUrl = tmpl.includes("{port}") ? tmpl.split("{port}").join(String(emp.port)) : tmpl;
+      if (admin) {
+        try {
+          const base =
+            typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1";
+          const u = new URL(pageUrl, base);
+          if (isLoopbackUrlHost(u.hostname)) {
+            u.hostname = admin.host;
+            u.protocol = admin.useTls ? "https:" : "http:";
+            pageUrl = u.toString();
+          }
+        } catch {
+          /* keep pageUrl */
+        }
+      }
+    } else {
+      const hp = useTls ? "https" : "http";
+      pageUrl = `${hp}://${host}:${emp.port}${prefix}/overview`;
+    }
+
+    const hashless = pageUrl.includes("#") ? pageUrl.slice(0, pageUrl.indexOf("#")) : pageUrl;
+    return `${hashless}#${hash.toString()}`;
+  }
+
+  private async copyEmployeePortalLink(emp: Employee) {
+    this.listError = null;
+    this.formOk = null;
+    const url = this.buildEmployeePortalUrl(emp, { matchAdminHost: true });
+    if (!url) {
+      this.listError = "该员工尚未配置网关 Token，无法生成链接。";
+      return;
+    }
+    const ok = await copyTextToClipboard(url);
+    if (ok) {
+      this.formOk = "已复制员工入口链接（含 gatewayUrl、token、user）。";
+    } else {
+      this.listError = "复制链接失败，请检查浏览器剪贴板权限或手动复制。";
     }
   }
 
@@ -1211,8 +1724,11 @@ export class OpenClawAdminApp extends LitElement {
     void this.loadEmployees();
   }
 
-  private onSelectNav(nav: "employees" | "models" | "usage" | "skills" | "publicSkills") {
+  private onSelectNav(nav: "dashboard" | "employees" | "models" | "usage" | "skills" | "publicSkills") {
     this.adminNav = nav;
+    if (nav === "dashboard") {
+      void this.loadDashboardData();
+    }
     if (nav === "models") {
       void this.loadMainModels();
     }
@@ -1440,6 +1956,324 @@ export class OpenClawAdminApp extends LitElement {
     this.skillsPayload = r.data ?? null;
   }
 
+  private async loadDashboardData() {
+    this.dashLoading = true;
+    this.dashError = null;
+    await this.loadEmployees();
+    const days = 30;
+    const [u, s, p, m] = await Promise.all([
+      api<UsagePayload>(`/api/employees/usage?days=${encodeURIComponent(String(days))}`),
+      api<SkillsPayload>(`/api/employees/skills?agentId=${encodeURIComponent("main")}`),
+      api<{ skills: PublicSkillItem[] }>("/api/public-skills"),
+      api<{ main: { primary: string }; providers: MainModelsProviderRow[] }>("/api/main-models"),
+    ]);
+    this.dashLoading = false;
+    this.dashboardUsage = u.ok ? (u.data ?? null) : null;
+    this.dashboardSkills = s.ok ? (s.data ?? null) : null;
+    this.dashboardPublicSkillCount =
+      p.ok && Array.isArray(p.data?.skills) ? (p.data?.skills?.length ?? 0) : 0;
+    if (m.ok && m.data) {
+      this.dashboardMainPrimary = (m.data.main?.primary ?? "").trim();
+      const prov = m.data.providers ?? [];
+      this.dashboardProviderKeysConfigured = prov.filter((row) => row.hasApiKey).length;
+    } else {
+      this.dashboardMainPrimary = "";
+      this.dashboardProviderKeysConfigured = 0;
+    }
+    const errs: string[] = [];
+    if (!u.ok && u.error) {
+      errs.push(`用量：${u.error}`);
+    }
+    if (!s.ok && s.error) {
+      errs.push(`技能：${s.error}`);
+    }
+    if (!p.ok && p.error) {
+      errs.push(`公共技能：${p.error}`);
+    }
+    if (!m.ok && m.error) {
+      errs.push(`模型：${m.error}`);
+    }
+    this.dashError = errs.length ? errs.join(" ") : null;
+  }
+
+  private dashCoerceNum(v: unknown): number {
+    if (typeof v === "number" && Number.isFinite(v)) {
+      return v;
+    }
+    if (typeof v === "string" && v.trim()) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
+  }
+
+  private dashUsageTotals(): { tokens: number; cost: number; messages: number; tools: number } {
+    let tokens = 0;
+    let cost = 0;
+    let messages = 0;
+    let tools = 0;
+    for (const emp of this.dashboardUsage?.employees ?? []) {
+      const u = emp.usage;
+      if (!u) {
+        continue;
+      }
+      const tt = u.totals?.totalTokens;
+      const tc = u.totals?.totalCost;
+      tokens += this.dashCoerceNum(tt);
+      cost += this.dashCoerceNum(tc);
+      messages += u.aggregates?.messages?.total ?? 0;
+      tools += u.aggregates?.tools?.totalCalls ?? 0;
+    }
+    return { tokens, cost, messages, tools };
+  }
+
+  private dashAggregateDim(
+    key: "byModel" | "byProvider",
+  ): { label: string; tokens: number }[] {
+    const map = new Map<string, number>();
+    for (const emp of this.dashboardUsage?.employees ?? []) {
+      const rows = emp.usage?.aggregates?.[key] ?? [];
+      for (const row of rows) {
+        const label = this.usageDimLabel(row);
+        const n = this.dashCoerceNum(row.totals?.totalTokens);
+        map.set(label, (map.get(label) ?? 0) + n);
+      }
+    }
+    return [...map.entries()]
+      .map(([label, tok]) => ({ label, tokens: tok }))
+      .sort((a, b) => b.tokens - a.tokens)
+      .slice(0, 8);
+  }
+
+  private dashPerEmployeeTokens(): { username: string; tokens: number }[] {
+    return (this.dashboardUsage?.employees ?? []).map((e) => {
+      const tokens = this.dashCoerceNum(e.usage?.totals?.totalTokens);
+      return { username: e.username, tokens };
+    });
+  }
+
+  private dashSkillsRollup(): { total: number; eligible: number; disabled: number; missing: number } {
+    let total = 0;
+    let eligible = 0;
+    let disabled = 0;
+    let missing = 0;
+    for (const emp of this.dashboardSkills?.employees ?? []) {
+      const sum = emp.skills?.summary;
+      if (!sum) {
+        continue;
+      }
+      total += sum.total;
+      eligible += sum.eligible;
+      disabled += sum.disabled;
+      missing += sum.withMissing;
+    }
+    return { total, eligible, disabled, missing };
+  }
+
+  private renderDashHtmlHBarChart(
+    rows: { label: string; value: number }[],
+    title: string,
+    accent: "warm" | "cool",
+  ) {
+    const max = Math.max(1, ...rows.map((r) => r.value));
+    const bg =
+      accent === "warm"
+        ? "linear-gradient(90deg, #e85d4c 0%, #60a5fa 100%)"
+        : "linear-gradient(90deg, #22d3ee 0%, #a78bfa 100%)";
+    return html`
+      <div class="dash-html-bars" role="img" aria-label=${title}>
+        ${rows.map((row) => {
+          const pct = Math.min(100, Math.max(0, (row.value / max) * 100));
+          const short = row.label.length > 18 ? `${row.label.slice(0, 16)}…` : row.label;
+          return html`
+            <div class="dash-bar-row">
+              <div class="dash-bar-row__label" title=${row.label}>${short}</div>
+              <div class="dash-bar-row__track">
+                <div class="dash-bar-row__fill" style=${`width:${pct}%;background:${bg};`}></div>
+              </div>
+              <div class="dash-bar-row__val">${new Intl.NumberFormat("zh-CN").format(Math.round(row.value))}</div>
+            </div>
+          `;
+        })}
+      </div>
+    `;
+  }
+
+  private renderDashEmployeeHtmlBars(rows: { username: string; tokens: number }[]) {
+    const max = Math.max(1, ...rows.map((r) => r.tokens));
+    const bg = "linear-gradient(90deg, #a78bfa 0%, #38bdf8 100%)";
+    return html`
+      <div class="dash-html-bars" role="img" aria-label="各员工 Tokens">
+        ${rows.map(
+          (row) => html`
+            <div class="dash-bar-row">
+              <div class="dash-bar-row__label" title=${row.username}>${row.username}</div>
+              <div class="dash-bar-row__track">
+                <div class="dash-bar-row__fill" style=${`width:${(row.tokens / max) * 100}%;background:${bg};`}></div>
+              </div>
+              <div class="dash-bar-row__val">${new Intl.NumberFormat("zh-CN").format(Math.round(row.tokens))}</div>
+            </div>
+          `,
+        )}
+      </div>
+    `;
+  }
+
+  private dashSvgSparkline(values: number[], gradId: string) {
+    const w = 360;
+    const h = 72;
+    const pad = 4;
+    if (!values.length) {
+      return html``;
+    }
+    const max = Math.max(1, ...values);
+    const min = 0;
+    const span = max - min || 1;
+    const innerW = w - pad * 2;
+    const step = values.length > 1 ? innerW / (values.length - 1) : 0;
+    const pts = values.map((v, i) => {
+      const x = values.length > 1 ? pad + i * step : pad + innerW / 2;
+      const y = pad + (1 - (v - min) / span) * (h - pad * 2);
+      return `${x},${y}`;
+    });
+    const d = `M ${pts.join(" L ")}`;
+    const strokeUrl = `url(#${gradId})`;
+    return html`
+      <div class="dash-svg-wrap" role="img" aria-label="用量走势（按员工）">
+        <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <linearGradient id=${gradId} x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#f472b6" />
+              <stop offset="100%" stop-color="#fbbf24" />
+            </linearGradient>
+          </defs>
+          <path d=${d} fill="none" stroke=${strokeUrl} stroke-width="2.5" stroke-linecap="round" />
+        </svg>
+      </div>
+    `;
+  }
+
+  private renderDashboardPanel() {
+    const totals = this.dashUsageTotals();
+    const empList = this.employees;
+    const running = empList.filter((e) => e.gatewayRunning).length;
+    const stopped = Math.max(0, empList.length - running);
+    const pctRun = empList.length ? (running / empList.length) * 360 : 0;
+    const byModel = this.dashAggregateDim("byModel").map((r) => ({ label: r.label, value: r.tokens }));
+    const byProv = this.dashAggregateDim("byProvider").map((r) => ({ label: r.label, value: r.tokens }));
+    const perEmp = this.dashPerEmployeeTokens();
+    const sparkVals = perEmp.map((r) => r.tokens);
+    const sk = this.dashSkillsRollup();
+    const updated = new Date().toLocaleString("zh-CN", { hour12: false });
+    return html`
+      <div class="dash-wrap">
+        <div class="dash-hero">
+          <div class="dash-hero__inner">
+            <div>
+              <h2>数据总览</h2>
+              <p>
+                聚合近 30 天用量、网关在线、技能与公共技能库状态。数据来自各员工网关 RPC，未启动网关的员工将显示为跳过或零用量。
+              </p>
+            </div>
+            <div class="dash-hero__meta">上次刷新：${updated}${this.dashLoading ? " · 加载中…" : ""}</div>
+          </div>
+        </div>
+
+        <div class="dash-toolbar">
+          <button type="button" class="secondary" ?disabled=${this.dashLoading} @click=${() => void this.loadDashboardData()}>
+            ${this.dashLoading ? "刷新中…" : "刷新仪表盘"}
+          </button>
+          ${this.dashError ? html`<span class="err" style="margin:0;">${this.dashError}</span>` : ""}
+        </div>
+
+        <div class="dash-kpi-grid">
+          <div class="dash-kpi">
+            <div class="dash-kpi__label">员工数</div>
+            <div class="dash-kpi__val">${new Intl.NumberFormat("zh-CN").format(empList.length)}</div>
+            <div class="dash-kpi__sub">网关运行 ${running} / 停止 ${stopped}</div>
+          </div>
+          <div class="dash-kpi">
+            <div class="dash-kpi__label">Tokens（30 天合计）</div>
+            <div class="dash-kpi__val">${this.fmtUsageTok(totals.tokens)}</div>
+            <div class="dash-kpi__sub">跨员工会话用量汇总</div>
+          </div>
+          <div class="dash-kpi">
+            <div class="dash-kpi__label">估算成本</div>
+            <div class="dash-kpi__val">${this.fmtUsageUsd(totals.cost)}</div>
+            <div class="dash-kpi__sub">消息 ${this.fmtUsageTok(totals.messages)} · 工具 ${this.fmtUsageTok(totals.tools)}</div>
+          </div>
+          <div class="dash-kpi">
+            <div class="dash-kpi__label">公共技能包</div>
+            <div class="dash-kpi__val">${new Intl.NumberFormat("zh-CN").format(this.dashboardPublicSkillCount)}</div>
+            <div class="dash-kpi__sub">项目根目录 skills/</div>
+          </div>
+          <div class="dash-kpi">
+            <div class="dash-kpi__label">主模型</div>
+            <div class="dash-kpi__val" style="font-size:0.95rem;line-height:1.25;">
+              ${this.dashboardMainPrimary ? this.dashboardMainPrimary : "—"}
+            </div>
+            <div class="dash-kpi__sub">已配置密钥的供应商 ${this.dashboardProviderKeysConfigured} 个</div>
+          </div>
+          <div class="dash-kpi">
+            <div class="dash-kpi__label">技能条目（汇总）</div>
+            <div class="dash-kpi__val">${new Intl.NumberFormat("zh-CN").format(sk.total)}</div>
+            <div class="dash-kpi__sub">可用 ${sk.eligible} · 禁用 ${sk.disabled} · 缺依赖 ${sk.missing}</div>
+          </div>
+        </div>
+
+        <div class="dash-charts">
+          <div class="dash-panel">
+            <h3>网关在线占比</h3>
+            <p class="sub">按员工网关进程是否在运行统计。</p>
+            <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">
+              <div class="dash-donut-ring" style=${`--dash-pct:${pctRun}deg;`} aria-label="运行中占比"></div>
+              <ul class="dash-mini-list" style="flex:1;min-width:200px;">
+                <li><span>运行中</span><span class="num">${running}</span></li>
+                <li><span>未运行</span><span class="num">${stopped}</span></li>
+                <li><span>员工总数</span><span class="num">${empList.length}</span></li>
+              </ul>
+            </div>
+            <div class="dash-legend">
+              <span><i style="background:#34d399;"></i>运行</span>
+              <span><i style="background:#3d4858;"></i>停止</span>
+            </div>
+          </div>
+
+          <div class="dash-panel">
+            <h3>按员工 Tokens</h3>
+            <p class="sub">近 ${this.dashboardUsage?.days ?? 30} 天各员工 totalTokens。</p>
+            ${perEmp.length ? this.renderDashEmployeeHtmlBars(perEmp) : html`<p class="sub">暂无用量数据</p>`}
+          </div>
+
+          <div class="dash-panel">
+            <h3>用量走势（按员工）</h3>
+            <p class="sub">将各员工 Tokens 连成折线，便于一眼看出热点账号。</p>
+            ${sparkVals.some((v) => v > 0)
+              ? this.dashSvgSparkline(sparkVals, "dashLineGrad1")
+              : html`<p class="sub">暂无可用数据点</p>`}
+          </div>
+        </div>
+
+        <div class="dash-charts">
+          <div class="dash-panel">
+            <h3>模型维度 Top</h3>
+            <p class="sub">聚合各员工网关用量；若网关未返回拆分，则由会话列表按模型汇总。</p>
+            ${byModel.length
+              ? this.renderDashHtmlHBarChart(byModel, "模型 Tokens", "warm")
+              : html`<p class="sub">暂无模型拆分数据</p>`}
+          </div>
+          <div class="dash-panel">
+            <h3>供应商维度 Top</h3>
+            <p class="sub">聚合各员工网关用量；若网关未返回拆分，则由会话列表按供应商汇总。</p>
+            ${byProv.length
+              ? this.renderDashHtmlHBarChart(byProv, "供应商 Tokens", "cool")
+              : html`<p class="sub">暂无供应商拆分数据</p>`}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private async loadMainModels() {
     this.modelsLoading = true;
     this.modelsError = null;
@@ -1580,6 +2414,20 @@ export class OpenClawAdminApp extends LitElement {
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path>
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path>
     </svg>`;
+    const dashboardIcon = html`<svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="3" width="7" height="9" rx="1"></rect>
+      <rect x="14" y="3" width="7" height="5" rx="1"></rect>
+      <rect x="14" y="12" width="7" height="9" rx="1"></rect>
+      <rect x="3" y="16" width="7" height="5" rx="1"></rect>
+    </svg>`;
 
     if (this.session === "unknown") {
       return html`
@@ -1642,6 +2490,14 @@ export class OpenClawAdminApp extends LitElement {
           <nav class="sidebar__nav" aria-label="主导航">
             <button
               type="button"
+              class="sidebar__item ${this.adminNav === "dashboard" ? "sidebar__item--active" : ""}"
+              @click=${() => this.onSelectNav("dashboard")}
+            >
+              ${dashboardIcon}
+              数据总览
+            </button>
+            <button
+              type="button"
               class="sidebar__item ${this.adminNav === "employees" ? "sidebar__item--active" : ""}"
               @click=${() => this.onSelectNav("employees")}
             >
@@ -1685,30 +2541,34 @@ export class OpenClawAdminApp extends LitElement {
         <div class="main">
           <header class="main-header">
             <h1>
-              ${this.adminNav === "employees"
-                ? "员工管理"
-                : this.adminNav === "models"
-                  ? "模型管理"
-                  : this.adminNav === "usage"
-                    ? "使用监控"
-                    : this.adminNav === "skills"
-                      ? "技能监控"
-                      : "公共技能库"}
+              ${this.adminNav === "dashboard"
+                ? "数据总览"
+                : this.adminNav === "employees"
+                  ? "员工管理"
+                  : this.adminNav === "models"
+                    ? "模型管理"
+                    : this.adminNav === "usage"
+                      ? "使用监控"
+                      : this.adminNav === "skills"
+                        ? "技能监控"
+                        : "公共技能库"}
             </h1>
             <div class="main-header__actions">
               <button type="button" class="secondary" @click=${this.onLogout}>退出登录</button>
             </div>
           </header>
           <div class="main-body">
-            ${this.adminNav === "employees"
-              ? this.renderEmployeesPanel()
-              : this.adminNav === "models"
-                ? this.renderModelsPanel()
-                : this.adminNav === "usage"
-                  ? this.renderUsagePanel()
-                  : this.adminNav === "skills"
-                    ? this.renderSkillsPanel()
-                    : this.renderPublicSkillsPanel()}
+            ${this.adminNav === "dashboard"
+              ? this.renderDashboardPanel()
+              : this.adminNav === "employees"
+                ? this.renderEmployeesPanel()
+                : this.adminNav === "models"
+                  ? this.renderModelsPanel()
+                  : this.adminNav === "usage"
+                    ? this.renderUsagePanel()
+                    : this.adminNav === "skills"
+                      ? this.renderSkillsPanel()
+                      : this.renderPublicSkillsPanel()}
           </div>
         </div>
       </div>
@@ -1724,6 +2584,84 @@ export class OpenClawAdminApp extends LitElement {
             <p class="sub">每位员工独立 OPENCLAW_STATE_DIR / 配置目录与端口；保存后自动执行 openclaw gateway。</p>
           </div>
         </div>
+
+        <details class="portal-prefs">
+          <summary>员工入口链接（一键复制）</summary>
+          <p class="sub" style="margin:8px 0 0;">
+            表格中「复制入口链接」会生成带
+            <code>#gatewayUrl=…&amp;token=…&amp;user=…</code> 的地址（参数在 hash 内，减少进服务器日志的风险）。以下选项保存在本浏览器。
+          </p>
+          <div class="portal-prefs__grid">
+            <div>
+              <label>网关主机（HTTP/WS 共用，默认本机）</label>
+              <input
+                type="text"
+                autocomplete="off"
+                .value=${this.portalLinkHost}
+                @input=${(e: Event) => {
+                  this.portalLinkHost = (e.target as HTMLInputElement).value;
+                  this.persistPortalLinkPrefs();
+                }}
+              />
+            </div>
+            <div>
+              <label>路径前缀（与网关 Control UI / WS 的 basePath 一致，如 <code>/openclaw</code>）</label>
+              <input
+                type="text"
+                placeholder="留空表示根路径"
+                autocomplete="off"
+                .value=${this.portalLinkPathPrefix}
+                @input=${(e: Event) => {
+                  this.portalLinkPathPrefix = (e.target as HTMLInputElement).value;
+                  this.persistPortalLinkPrefs();
+                }}
+              />
+            </div>
+            <div>
+              <label>页面 URL 模板（可选，覆盖默认的 http(s)://主机:端口…/overview）</label>
+              <input
+                type="text"
+                placeholder="例: http://127.0.0.1:{port}/openclaw/overview"
+                autocomplete="off"
+                .value=${this.portalLinkPageTemplate}
+                @input=${(e: Event) => {
+                  this.portalLinkPageTemplate = (e.target as HTMLInputElement).value;
+                  this.persistPortalLinkPrefs();
+                }}
+              />
+            </div>
+            <div>
+              <label>WebSocket 主机（可选，默认同上；固定页面与网关不同机时填员工可达的网关主机）</label>
+              <input
+                type="text"
+                placeholder="默认同「网关主机」"
+                autocomplete="off"
+                .value=${this.portalLinkWsHost}
+                @input=${(e: Event) => {
+                  this.portalLinkWsHost = (e.target as HTMLInputElement).value;
+                  this.persistPortalLinkPrefs();
+                }}
+              />
+            </div>
+          </div>
+          <div class="portal-prefs__row">
+            <input
+              id="portal-link-tls"
+              type="checkbox"
+              .checked=${this.portalLinkUseTls}
+              @change=${(e: Event) => {
+                this.portalLinkUseTls = (e.target as HTMLInputElement).checked;
+                this.persistPortalLinkPrefs();
+              }}
+            />
+            <label for="portal-link-tls">使用 HTTPS / WSS（反代、Tailscale Serve 等）</label>
+          </div>
+          <p class="portal-prefs__hint">
+            默认链接形态：<code>http://网关主机:员工端口</code> + 路径前缀 + <code>/overview#…</code>。若 Control UI 与网关不在同一
+            URL，请在「页面 URL 模板」填写完整打开地址（可含 <code>{port}</code>）；模板不含 <code>{port}</code>
+            时，所有员工共用同一页面，请确保「WebSocket 主机」对员工侧浏览器解析到正确网关。
+          </p>
+        </details>
 
         <h2 style="font-size:1rem;margin:0 0 12px;">新建员工</h2>
         <form @submit=${this.onCreate}>
@@ -1788,7 +2726,7 @@ export class OpenClawAdminApp extends LitElement {
                 <div class="sub" style="margin:6px 0 0;">
                   在 Control UI 连接该员工网关时：Gateway URL 填
                   <code style="display:inline;padding:2px 6px;">ws://127.0.0.1:&lt;端口&gt;</code>
-                  ，Token 填下方同一串。
+                  ，Token 填下方同一串。也可在下方表格使用「复制入口链接」生成完整地址发给员工。
                 </div>
                 <code>${this.highlightGatewayToken}</code>
                 <div class="actions">
@@ -1871,6 +2809,15 @@ export class OpenClawAdminApp extends LitElement {
                               >
                                 启动网关
                               </button>`}
+                          <button
+                            type="button"
+                            class="secondary"
+                            ?disabled=${this.busy || !emp.gatewayToken}
+                            title="复制含 gatewayUrl、token、user 的完整入口 URL"
+                            @click=${() => this.copyEmployeePortalLink(emp)}
+                          >
+                            复制入口链接
+                          </button>
                           <button
                             type="button"
                             class="secondary"
