@@ -655,12 +655,31 @@ async function copyMainAgentAuthProfilesToEmployee(employee) {
 }
 
 /**
+ * Whether employee config should restrict fs tools to workspace and deny exec/process.
+ * True when admin checks "tighten to workspace", or legacy store rows used path fields.
  * @param {unknown} emp
- * @param {{ inheritMainModels?: boolean; mergeIntoExisting?: boolean }} [options]
+ */
+function employeeTightensWorkspaceScope(emp) {
+  if (emp?.tightenWorkspaceScope === true) {
+    return true;
+  }
+  if (typeof emp?.workspaceWritePath === "string" && emp.workspaceWritePath.trim()) {
+    return true;
+  }
+  if (typeof emp?.workspaceReadPath === "string" && emp.workspaceReadPath.trim()) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * @param {unknown} emp
+ * @param {{ inheritMainModels?: boolean; mergeIntoExisting?: boolean; syncMainModels?: boolean }} [options]
  */
 async function writeEmployeeGatewayConfig(emp, options = {}) {
   const dir = employeeDir(emp);
-  const workspaceDir = employeeWorkspaceDir(emp);
+  const defaultWorkspaceDir = employeeWorkspaceDir(emp);
+  const resolvedWriteWorkspace = resolveEmployeeWorkspaceWriteAbs(emp);
   const configPath = path.join(dir, "openclaw.json");
   const token = typeof emp.gatewayToken === "string" ? emp.gatewayToken.trim() : "";
   const bindEnvRaw =
@@ -693,6 +712,34 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
     }
   }
   const mainCfg = await loadMainOpenclawJson();
+
+  if (options.syncMainModels === true) {
+    const slice = extractEmployeeModelSliceFromMainConfig(mainCfg);
+    if (slice.models !== undefined) {
+      cfg.models = slice.models;
+    }
+    if (slice.auth !== undefined) {
+      cfg.auth = slice.auth;
+    }
+    if (slice.plugins?.entries !== undefined) {
+      cfg.plugins = cfg.plugins && typeof cfg.plugins === "object" ? { ...cfg.plugins } : {};
+      cfg.plugins.entries = slice.plugins.entries;
+    }
+    if (slice.agents?.defaults && typeof slice.agents.defaults === "object") {
+      cfg.agents = cfg.agents && typeof cfg.agents === "object" ? { ...cfg.agents } : {};
+      cfg.agents.defaults =
+        cfg.agents.defaults && typeof cfg.agents.defaults === "object"
+          ? { ...cfg.agents.defaults }
+          : {};
+      const sd = slice.agents.defaults;
+      if (sd.model !== undefined) {
+        cfg.agents.defaults.model = sd.model;
+      }
+      if (sd.models !== undefined) {
+        cfg.agents.defaults.models = sd.models;
+      }
+    }
+  }
 
   const prevGw = cfg.gateway && typeof cfg.gateway === "object" ? cfg.gateway : {};
   const prevControlUi =
@@ -729,22 +776,17 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
     },
   };
 
-  // Keep employee gateways on isolated workspaces.
+  // Keep employee gateways on isolated workspaces (override via store `workspaceWritePath`).
   cfg.agents = cfg.agents && typeof cfg.agents === "object" ? cfg.agents : {};
   cfg.agents.defaults =
     cfg.agents.defaults && typeof cfg.agents.defaults === "object" ? cfg.agents.defaults : {};
-  if (
-    typeof cfg.agents.defaults.workspace !== "string" ||
-    cfg.agents.defaults.workspace.trim().length === 0
-  ) {
-    cfg.agents.defaults.workspace = workspaceDir;
-  }
+  cfg.agents.defaults.workspace = resolvedWriteWorkspace;
 
   // Seed main shared skills into each employee workspace so subsequent edits stay local.
   const sharedMainSkillsDir = resolveSharedMainSkillsDir(mainCfg);
   await seedSharedSkillsIntoWorkspace({
     sharedSkillsDir: sharedMainSkillsDir,
-    workspaceDir,
+    workspaceDir: resolvedWriteWorkspace,
   });
 
   // Do not expose shared main skills path directly; otherwise tool invocations will
@@ -758,8 +800,56 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
     .filter((v) => v && v.trim().toLowerCase() !== normalizedShared);
   cfg.skills.load.extraDirs = extraDirsNext;
 
+  // Admin "tighten to workspace": fs tools stay under `agents.defaults.workspace` and
+  // host shell tools are deny-listed so agents cannot bypass via `dir D:\\` etc.
+  const tightenWs = employeeTightensWorkspaceScope(emp);
+  if (tightenWs) {
+    cfg.tools = cfg.tools && typeof cfg.tools === "object" ? { ...cfg.tools } : {};
+    cfg.tools.fs =
+      cfg.tools.fs && typeof cfg.tools.fs === "object" ? { ...cfg.tools.fs } : {};
+    cfg.tools.fs.workspaceOnly = true;
+    const runtimeDeny = ["exec", "process"];
+    const prevDeny = Array.isArray(cfg.tools.deny)
+      ? cfg.tools.deny.map((v) => (typeof v === "string" ? v.trim() : "")).filter(Boolean)
+      : [];
+    const seen = new Set(prevDeny.map((v) => v.toLowerCase()));
+    for (const id of runtimeDeny) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        prevDeny.push(id);
+      }
+    }
+    cfg.tools.deny = prevDeny;
+  } else if (cfg.tools && typeof cfg.tools === "object") {
+    cfg.tools = { ...cfg.tools };
+    if (cfg.tools.fs && typeof cfg.tools.fs === "object") {
+      const fsNext = { ...cfg.tools.fs };
+      delete fsNext.workspaceOnly;
+      if (Object.keys(fsNext).length === 0) {
+        delete cfg.tools.fs;
+      } else {
+        cfg.tools.fs = fsNext;
+      }
+    }
+    if (Array.isArray(cfg.tools.deny)) {
+      const drop = new Set(["exec", "process"]);
+      const pruned = cfg.tools.deny.filter(
+        (v) => typeof v !== "string" || !drop.has(v.trim().toLowerCase()),
+      );
+      if (pruned.length === 0) {
+        delete cfg.tools.deny;
+      } else {
+        cfg.tools.deny = pruned;
+      }
+    }
+    if (Object.keys(cfg.tools).length === 0) {
+      delete cfg.tools;
+    }
+  }
+
   await fs.mkdir(dir, { recursive: true });
-  await fs.mkdir(workspaceDir, { recursive: true });
+  await fs.mkdir(defaultWorkspaceDir, { recursive: true });
+  await fs.mkdir(resolvedWriteWorkspace, { recursive: true });
   await fs.writeFile(configPath, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
 
   if (!options.mergeIntoExisting && options.inheritMainModels !== false) {
@@ -768,6 +858,15 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
     } catch (err) {
       process.stderr.write(
         `[openclaw-ui-admin] warn: could not copy main auth-profiles.json for employee ${emp.id}: ${String(err?.message ?? err)}\n`,
+      );
+    }
+  }
+  if (options.syncMainModels === true) {
+    try {
+      await copyMainAgentAuthProfilesToEmployee(emp);
+    } catch (err) {
+      process.stderr.write(
+        `[openclaw-ui-admin] warn: could not copy main auth-profiles.json after model sync for employee ${emp.id}: ${String(err?.message ?? err)}\n`,
       );
     }
   }
@@ -904,6 +1003,21 @@ function employeeWorkspaceDir(id) {
   return path.join(employeeDir(id), "workspace");
 }
 
+/** Absolute workspace for agent tools; optional per-employee override in store. */
+function resolveEmployeeWorkspaceWriteAbs(emp) {
+  const def = employeeWorkspaceDir(emp);
+  const w = typeof emp?.workspaceWritePath === "string" ? emp.workspaceWritePath.trim() : "";
+  return w ? path.resolve(w) : def;
+}
+
+function normalizeOptionalPathString(raw) {
+  if (typeof raw !== "string") {
+    return "";
+  }
+  const t = raw.trim();
+  return t ? path.resolve(t) : "";
+}
+
 function employeeHomeDir(id) {
   return path.join(employeeDir(id), "home");
 }
@@ -959,11 +1073,13 @@ async function startGatewayProcess(emp) {
   }
   const dir = employeeDir(id);
   const stateDir = path.join(dir, "state");
-  const workspaceDir = employeeWorkspaceDir(id);
+  const workspaceDir = resolveEmployeeWorkspaceWriteAbs(emp);
+  const defaultWorkspaceDir = employeeWorkspaceDir(id);
   const homeDir = employeeHomeDir(id);
   const bundledSkillsDir = employeeBundledSkillsDir(id);
   const configPath = path.join(dir, "openclaw.json");
   mkdirSync(stateDir, { recursive: true });
+  mkdirSync(defaultWorkspaceDir, { recursive: true });
   mkdirSync(workspaceDir, { recursive: true });
   mkdirSync(homeDir, { recursive: true });
   mkdirSync(bundledSkillsDir, { recursive: true });
@@ -1022,6 +1138,15 @@ function attachGatewayStatus(employees) {
     const child = row?.child;
     const running = Boolean(child && child.exitCode === null);
     const gatewayToken = typeof e.gatewayToken === "string" && e.gatewayToken.trim() ? e.gatewayToken : null;
+    const workspaceWritePath =
+      typeof e.workspaceWritePath === "string" && e.workspaceWritePath.trim()
+        ? e.workspaceWritePath.trim()
+        : null;
+    const workspaceReadPath =
+      typeof e.workspaceReadPath === "string" && e.workspaceReadPath.trim()
+        ? e.workspaceReadPath.trim()
+        : null;
+    const tightenWorkspaceScope = employeeTightensWorkspaceScope(e);
     return {
       id: e.id,
       username: e.username,
@@ -1030,6 +1155,9 @@ function attachGatewayStatus(employees) {
       gatewayRunning: running,
       gatewayPid: running && child?.pid ? child.pid : null,
       gatewayToken,
+      tightenWorkspaceScope,
+      workspaceWritePath,
+      workspaceReadPath,
     };
   });
 }
@@ -1481,6 +1609,57 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      if (method === "POST" && pathname === "/api/employees/sync-main-models") {
+        const raw = await readBody(req);
+        const body = raw ? JSON.parse(raw) : {};
+        const employeeId = typeof body.employeeId === "string" ? body.employeeId.trim() : "";
+        const store = loadStore();
+        const list = employeeId
+          ? store.employees.filter((e) => e && e.id === employeeId)
+          : store.employees.filter(Boolean);
+        if (employeeId && list.length === 0) {
+          json(res, 404, { error: "not found" });
+          return;
+        }
+        if (!existsSync(OPENCLAW_ENTRY)) {
+          json(res, 500, { error: "未找到 OpenClaw 入口（dist/entry）。" });
+          return;
+        }
+        /** @type {Array<{ id: string; username: string; ok: boolean; error?: string; restarted?: boolean }>} */
+        const results = [];
+        for (const emp of list) {
+          const wasRunning = gatewayByEmployeeId.has(emp.id);
+          try {
+            if (wasRunning) {
+              stopGatewayFor(emp.id);
+            }
+            await writeEmployeeGatewayConfig(emp, {
+              mergeIntoExisting: true,
+              inheritMainModels: false,
+              syncMainModels: true,
+            });
+            if (wasRunning) {
+              await startGatewayProcess(emp);
+            }
+            results.push({
+              id: emp.id,
+              username: emp.username,
+              ok: true,
+              restarted: wasRunning,
+            });
+          } catch (err) {
+            results.push({
+              id: emp.id,
+              username: emp.username,
+              ok: false,
+              error: String(err?.message ?? err),
+            });
+          }
+        }
+        json(res, 200, { ok: true, results });
+        return;
+      }
+
       if (method === "POST" && pathname === "/api/employees") {
         const raw = await readBody(req);
         const body = raw ? JSON.parse(raw) : {};
@@ -1488,6 +1667,7 @@ const server = http.createServer(async (req, res) => {
         const port = Number(body.port);
         const startGateway = body.startGateway !== false;
         const inheritMainModels = body.inheritMainModels !== false;
+        const tightenWorkspaceScope = body.tightenWorkspaceScope === true;
 
         if (!USERNAME_RE.test(username)) {
           json(res, 400, {
@@ -1520,7 +1700,15 @@ const server = http.createServer(async (req, res) => {
         const stateDir = path.join(dir, "state");
         await fs.mkdir(stateDir, { recursive: true });
 
-        const emp = { id, username, dirName: username, port, createdAt, gatewayToken };
+        const emp = {
+          id,
+          username,
+          dirName: username,
+          port,
+          createdAt,
+          gatewayToken,
+          ...(tightenWorkspaceScope ? { tightenWorkspaceScope: true } : {}),
+        };
         await writeEmployeeGatewayConfig(emp, { inheritMainModels });
         store.employees.push(emp);
         saveStore(store);
@@ -1545,6 +1733,69 @@ const server = http.createServer(async (req, res) => {
           gatewayStarted,
           gatewayToken,
         });
+        return;
+      }
+
+      const patchMatch = pathname.match(/^\/api\/employees\/([^/]+)$/);
+      if (method === "PATCH" && patchMatch) {
+        const id = patchMatch[1];
+        const raw = await readBody(req);
+        const body = raw ? JSON.parse(raw) : {};
+        const store = loadStore();
+        const emp = store.employees.find((e) => e.id === id);
+        if (!emp) {
+          json(res, 404, { error: "not found" });
+          return;
+        }
+        if (body.port !== undefined && body.port !== null) {
+          const newPort = Number(body.port);
+          if (!Number.isInteger(newPort) || newPort < 1024 || newPort > 65535) {
+            json(res, 400, { error: "端口需为 1024–65535 的整数。" });
+            return;
+          }
+          if (newPort !== emp.port) {
+            if (store.employees.some((e) => e.port === newPort && e.id !== id)) {
+              json(res, 400, { error: "端口已被其他员工占用。" });
+              return;
+            }
+            if (gatewayByEmployeeId.has(id)) {
+              json(res, 400, { error: "请先停止网关再修改端口。" });
+              return;
+            }
+            emp.port = newPort;
+          }
+        }
+        if (body.tightenWorkspaceScope !== undefined) {
+          const on = body.tightenWorkspaceScope === true;
+          if (on) {
+            emp.tightenWorkspaceScope = true;
+            delete emp.workspaceReadPath;
+          } else {
+            delete emp.tightenWorkspaceScope;
+            delete emp.workspaceWritePath;
+            delete emp.workspaceReadPath;
+          }
+        }
+        saveStore(store);
+        const wasRunning = gatewayByEmployeeId.has(id);
+        if (wasRunning) {
+          stopGatewayFor(id);
+        }
+        try {
+          await writeEmployeeGatewayConfig(emp, { mergeIntoExisting: true, inheritMainModels: false });
+        } catch (err) {
+          json(res, 500, { error: String(err?.message ?? err) });
+          return;
+        }
+        if (wasRunning) {
+          try {
+            await startGatewayProcess(emp);
+          } catch (err) {
+            json(res, 500, { error: `配置已保存但重启网关失败：${String(err?.message ?? err)}` });
+            return;
+          }
+        }
+        json(res, 200, { employee: attachGatewayStatus([emp])[0] });
         return;
       }
 

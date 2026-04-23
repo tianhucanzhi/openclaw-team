@@ -1,4 +1,4 @@
-import { LitElement, css, html } from "lit";
+import { LitElement, css, html, nothing } from "lit";
 import type { PropertyDeclarations } from "lit";
 
 /** Clipboard icon for copy actions (inline SVG). */
@@ -154,7 +154,20 @@ type Employee = {
   gatewayPid?: number | null;
   /** Control UI / WebSocket `connect` token (`gateway.auth.token`). */
   gatewayToken?: string | null;
+  /** When true (or legacy path fields set), fs tools are workspace-only and exec/process are denied. */
+  tightenWorkspaceScope?: boolean;
+  /** @deprecated Legacy custom workspace root; server still honors until cleared when saving unchecked. */
+  workspaceWritePath?: string | null;
+  workspaceReadPath?: string | null;
 };
+
+/** Checkbox state + legacy store rows that previously implied the same tightening. */
+function employeeEffectiveWorkspaceTighten(emp: Employee): boolean {
+  return (
+    emp.tightenWorkspaceScope === true ||
+    !!(emp.workspaceWritePath?.trim() || emp.workspaceReadPath?.trim())
+  );
+}
 
 type MainModelsProviderRow = {
   id: string;
@@ -323,6 +336,13 @@ export class OpenClawAdminApp extends LitElement {
     inheritMainModels: { state: true },
     formError: { state: true },
     formOk: { state: true },
+    createEmployeeModalOpen: { state: true },
+    newTightenWorkspaceScope: { state: true },
+    editEmployeeModalOpen: { state: true },
+    editTargetEmployeeId: { state: true },
+    editPort: { state: true },
+    editTightenWorkspaceScope: { state: true },
+    editModalError: { state: true },
     highlightGatewayToken: { state: true },
     adminNav: { state: true },
     modelsLoading: { state: true },
@@ -378,6 +398,13 @@ export class OpenClawAdminApp extends LitElement {
   inheritMainModels = true;
   formError: string | null = null;
   formOk: string | null = null;
+  createEmployeeModalOpen = false;
+  newTightenWorkspaceScope = false;
+  editEmployeeModalOpen = false;
+  editTargetEmployeeId: string | null = null;
+  editPort = "";
+  editTightenWorkspaceScope = false;
+  editModalError: string | null = null;
   /** Shown once after create/regenerate so admin can copy before navigating away. */
   highlightGatewayToken: string | null = null;
   /** Post-login sidebar section (extensible). */
@@ -1423,6 +1450,89 @@ export class OpenClawAdminApp extends LitElement {
       color: #7d8490;
       line-height: 1.45;
     }
+    .employees-list-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+      margin-bottom: 4px;
+    }
+    .employees-list-toolbar h2 {
+      margin: 0;
+      font-size: 1rem;
+      font-weight: 600;
+    }
+    .employees-list-toolbar__actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(0, 0, 0, 0.55);
+      box-sizing: border-box;
+    }
+    .modal-panel {
+      width: min(480px, 100%);
+      max-height: min(90vh, 720px);
+      overflow: auto;
+      padding: 22px 24px;
+      border-radius: var(--radius, 10px);
+      border: 1px solid var(--border, #2a3040);
+      background: var(--panel, #171a21);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+    }
+    .modal-panel h2 {
+      margin: 0 0 16px;
+      font-size: 1.1rem;
+      font-weight: 600;
+    }
+    .modal-panel form input {
+      max-width: none;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+    }
+    .modal-actions button {
+      margin-bottom: 0;
+    }
+    label .req {
+      color: var(--accent, #c94a4a);
+      margin-right: 4px;
+      font-weight: 700;
+    }
+    .cell-clip {
+      display: inline-block;
+      max-width: 120px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
+    }
+    .read-only-field {
+      font-size: 0.9rem;
+      padding: 8px 0;
+      color: var(--text, #e8eaed);
+    }
+    .field-hint {
+      font-size: 0.72rem;
+      color: var(--muted, #9aa0a6);
+      margin: -6px 0 12px;
+      line-height: 1.4;
+    }
   `;
 
   connectedCallback(): void {
@@ -1532,6 +1642,13 @@ export class OpenClawAdminApp extends LitElement {
     this.dashboardMainPrimary = "";
     this.dashboardProviderKeysConfigured = 0;
     this.adminNav = "dashboard";
+    this.createEmployeeModalOpen = false;
+    this.newTightenWorkspaceScope = false;
+    this.editEmployeeModalOpen = false;
+    this.editTargetEmployeeId = null;
+    this.editPort = "";
+    this.editTightenWorkspaceScope = false;
+    this.editModalError = null;
   }
 
   private async onCreate(e: Event) {
@@ -1540,11 +1657,11 @@ export class OpenClawAdminApp extends LitElement {
     this.formOk = null;
     const port = Number(this.newPort);
     if (!this.newUsername.trim()) {
-      this.formError = "请填写员工用户名与端口。";
+      this.formError = "请填写用户名。";
       return;
     }
     if (!Number.isInteger(port) || port < 1024 || port > 65535) {
-      this.formError = "端口必须是 1024–65535 的整数。";
+      this.formError = "请填写有效网关端口（1024–65535 的整数）。";
       return;
     }
     this.busy = true;
@@ -1555,6 +1672,7 @@ export class OpenClawAdminApp extends LitElement {
         port,
         startGateway: true,
         inheritMainModels: this.inheritMainModels,
+        tightenWorkspaceScope: this.newTightenWorkspaceScope,
       },
     });
     this.busy = false;
@@ -1574,7 +1692,68 @@ export class OpenClawAdminApp extends LitElement {
       : `已创建员工。${this.inheritMainModels ? "已写入 main 模型相关配置。" : "仅写入网关 Token。"}请保存下方网关 Token。`;
     this.newUsername = "";
     this.newPort = "";
+    this.newTightenWorkspaceScope = false;
     this.inheritMainModels = true;
+    this.createEmployeeModalOpen = false;
+    void this.loadEmployees();
+  }
+
+  private openCreateEmployeeModal() {
+    this.formError = null;
+    this.newUsername = "";
+    this.newPort = "";
+    this.newTightenWorkspaceScope = false;
+    this.inheritMainModels = true;
+    this.createEmployeeModalOpen = true;
+  }
+
+  private closeCreateEmployeeModal() {
+    this.createEmployeeModalOpen = false;
+    this.formError = null;
+    this.newTightenWorkspaceScope = false;
+  }
+
+  private openEditEmployee(emp: Employee) {
+    this.editModalError = null;
+    this.editTargetEmployeeId = emp.id;
+    this.editPort = String(emp.port);
+    this.editTightenWorkspaceScope = employeeEffectiveWorkspaceTighten(emp);
+    this.editEmployeeModalOpen = true;
+  }
+
+  private closeEditEmployeeModal() {
+    this.editEmployeeModalOpen = false;
+    this.editTargetEmployeeId = null;
+    this.editModalError = null;
+  }
+
+  private async onSaveEditEmployee(e: Event) {
+    e.preventDefault();
+    this.editModalError = null;
+    const id = this.editTargetEmployeeId;
+    if (!id) {
+      return;
+    }
+    const port = Number(this.editPort);
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      this.editModalError = "端口必须是 1024–65535 的整数。";
+      return;
+    }
+    this.busy = true;
+    const r = await api<{ employee: Employee }>(`/api/employees/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      json: {
+        port,
+        tightenWorkspaceScope: this.editTightenWorkspaceScope,
+      },
+    });
+    this.busy = false;
+    if (!r.ok) {
+      this.editModalError = r.error ?? "保存失败";
+      return;
+    }
+    this.formOk = "员工信息已更新。";
+    this.closeEditEmployeeModal();
     void this.loadEmployees();
   }
 
@@ -1721,6 +1900,67 @@ export class OpenClawAdminApp extends LitElement {
       this.listError = r.error ?? "删除失败";
       return;
     }
+    void this.loadEmployees();
+  }
+
+  private async syncMainModelsToAllEmployees() {
+    if (
+      !confirm(
+        "将从主 openclaw.json 同步 models、auth、plugins.entries 以及 agents.defaults 的 model/models 到全部员工，并复制 main 的 auth-profiles.json。正在运行的员工网关会短时停止后重启。确定？",
+      )
+    ) {
+      return;
+    }
+    this.busy = true;
+    this.listError = null;
+    this.formOk = null;
+    type SyncResult = { id: string; username: string; ok: boolean; error?: string; restarted?: boolean };
+    const r = await api<{ ok: boolean; results: SyncResult[] }>("/api/employees/sync-main-models", {
+      method: "POST",
+      json: {},
+    });
+    this.busy = false;
+    if (!r.ok) {
+      this.listError = r.error ?? "同步失败";
+      return;
+    }
+    const results = r.data?.results ?? [];
+    const failed = results.filter((x) => !x.ok);
+    if (failed.length > 0) {
+      this.listError = failed.map((f) => `${f.username}: ${f.error ?? "未知错误"}`).join("；");
+    }
+    const okCount = results.filter((x) => x.ok).length;
+    this.formOk = `已从 main 同步模型相关配置：成功 ${okCount}/${results.length} 名。`;
+    void this.loadEmployees();
+  }
+
+  private async syncMainModelsForEmployee(id: string, username: string) {
+    if (
+      !confirm(
+        `将主 openclaw.json 中的模型相关配置同步到员工「${username}」？若网关正在运行将自动重启。`,
+      )
+    ) {
+      return;
+    }
+    this.busy = true;
+    this.listError = null;
+    this.formOk = null;
+    type SyncResult = { id: string; username: string; ok: boolean; error?: string; restarted?: boolean };
+    const r = await api<{ ok: boolean; results: SyncResult[] }>("/api/employees/sync-main-models", {
+      method: "POST",
+      json: { employeeId: id },
+    });
+    this.busy = false;
+    if (!r.ok) {
+      this.listError = r.error ?? "同步失败";
+      return;
+    }
+    const row = r.data?.results?.[0];
+    if (!row?.ok) {
+      this.listError = row?.error ?? "同步失败";
+      return;
+    }
+    this.formOk = `员工「${username}」已同步主配置模型。${row.restarted ? "网关已重启。" : ""}`;
     void this.loadEmployees();
   }
 
@@ -2585,140 +2825,6 @@ export class OpenClawAdminApp extends LitElement {
           </div>
         </div>
 
-        <details class="portal-prefs">
-          <summary>员工入口链接（一键复制）</summary>
-          <p class="sub" style="margin:8px 0 0;">
-            表格中「复制入口链接」会生成带
-            <code>#gatewayUrl=…&amp;token=…&amp;user=…</code> 的地址（参数在 hash 内，减少进服务器日志的风险）。以下选项保存在本浏览器。
-          </p>
-          <div class="portal-prefs__grid">
-            <div>
-              <label>网关主机（HTTP/WS 共用，默认本机）</label>
-              <input
-                type="text"
-                autocomplete="off"
-                .value=${this.portalLinkHost}
-                @input=${(e: Event) => {
-                  this.portalLinkHost = (e.target as HTMLInputElement).value;
-                  this.persistPortalLinkPrefs();
-                }}
-              />
-            </div>
-            <div>
-              <label>路径前缀（与网关 Control UI / WS 的 basePath 一致，如 <code>/openclaw</code>）</label>
-              <input
-                type="text"
-                placeholder="留空表示根路径"
-                autocomplete="off"
-                .value=${this.portalLinkPathPrefix}
-                @input=${(e: Event) => {
-                  this.portalLinkPathPrefix = (e.target as HTMLInputElement).value;
-                  this.persistPortalLinkPrefs();
-                }}
-              />
-            </div>
-            <div>
-              <label>页面 URL 模板（可选，覆盖默认的 http(s)://主机:端口…/overview）</label>
-              <input
-                type="text"
-                placeholder="例: http://127.0.0.1:{port}/openclaw/overview"
-                autocomplete="off"
-                .value=${this.portalLinkPageTemplate}
-                @input=${(e: Event) => {
-                  this.portalLinkPageTemplate = (e.target as HTMLInputElement).value;
-                  this.persistPortalLinkPrefs();
-                }}
-              />
-            </div>
-            <div>
-              <label>WebSocket 主机（可选，默认同上；固定页面与网关不同机时填员工可达的网关主机）</label>
-              <input
-                type="text"
-                placeholder="默认同「网关主机」"
-                autocomplete="off"
-                .value=${this.portalLinkWsHost}
-                @input=${(e: Event) => {
-                  this.portalLinkWsHost = (e.target as HTMLInputElement).value;
-                  this.persistPortalLinkPrefs();
-                }}
-              />
-            </div>
-          </div>
-          <div class="portal-prefs__row">
-            <input
-              id="portal-link-tls"
-              type="checkbox"
-              .checked=${this.portalLinkUseTls}
-              @change=${(e: Event) => {
-                this.portalLinkUseTls = (e.target as HTMLInputElement).checked;
-                this.persistPortalLinkPrefs();
-              }}
-            />
-            <label for="portal-link-tls">使用 HTTPS / WSS（反代、Tailscale Serve 等）</label>
-          </div>
-          <p class="portal-prefs__hint">
-            默认链接形态：<code>http://网关主机:员工端口</code> + 路径前缀 + <code>/overview#…</code>。若 Control UI 与网关不在同一
-            URL，请在「页面 URL 模板」填写完整打开地址（可含 <code>{port}</code>）；模板不含 <code>{port}</code>
-            时，所有员工共用同一页面，请确保「WebSocket 主机」对员工侧浏览器解析到正确网关。
-          </p>
-        </details>
-
-        <h2 style="font-size:1rem;margin:0 0 12px;">新建员工</h2>
-        <form @submit=${this.onCreate}>
-          <div class="row">
-            <div class="row__cell">
-              <label>用户名（小写字母、数字、_ -）</label>
-              <input
-                type="text"
-                .value=${this.newUsername}
-                @input=${(e: Event) => (this.newUsername = (e.target as HTMLInputElement).value)}
-              />
-            </div>
-            <div class="row__port-action">
-              <div class="row__port-primary">
-                <div>
-                  <div class="row__port-label-row">
-                    <label>网关端口</label>
-                    <details class="port-hint-wrap">
-                      <summary class="info-icon-btn" aria-label="端口范围说明">${ICON_INFO}</summary>
-                      <div class="port-hint-pop">
-                        建议端口在 <strong>18800–28800</strong> 之间，便于与常见默认端口错开（仍须为
-                        <strong>1024–65535</strong> 内未占用端口）。
-                      </div>
-                    </details>
-                  </div>
-                  <input
-                    type="number"
-                    min="1024"
-                    max="65535"
-                    placeholder="例如 18800"
-                    .value=${this.newPort}
-                    @input=${(e: Event) => (this.newPort = (e.target as HTMLInputElement).value)}
-                  />
-                </div>
-                <button type="submit" ?disabled=${this.busy}>创建并启动网关</button>
-              </div>
-            </div>
-          </div>
-          <div class="checkbox-row">
-            <input
-              id="inherit-main-models"
-              type="checkbox"
-              .checked=${this.inheritMainModels}
-              @change=${(e: Event) => (this.inheritMainModels = (e.target as HTMLInputElement).checked)}
-            />
-            <label for="inherit-main-models">
-              默认沿用 main 的模型配置（将主配置中的
-              <code>models</code>、<code>agents.defaults.model</code> / <code>models</code> 别名、<code>auth</code>、
-              <code>plugins.entries</code> 写入该员工的 <code>openclaw.json</code>，并把主环境里的
-              <code>agents/main/agent/auth-profiles.json</code> 复制到该员工独立 state，否则仅有
-              <code>auth.profiles</code> 元数据无法解析 API Key）。不包含 <code>workspace</code> 等路径字段。取消勾选则仅创建带网关 Token 的最小配置。
-            </label>
-          </div>
-          ${this.formError ? html`<div class="err">${this.formError}</div>` : ""}
-          ${this.formOk ? html`<div class="ok">${this.formOk}</div>` : ""}
-        </form>
-
         ${this.highlightGatewayToken
           ? html`
               <div class="token-banner">
@@ -2739,13 +2845,31 @@ export class OpenClawAdminApp extends LitElement {
             `
           : ""}
 
+        ${this.formOk ? html`<div class="ok">${this.formOk}</div>` : ""}
         ${this.listError ? html`<div class="err">${this.listError}</div>` : ""}
+
+        <div class="employees-list-toolbar">
+          <h2>员工列表</h2>
+          <div class="employees-list-toolbar__actions">
+            <button type="button" ?disabled=${this.busy} @click=${this.openCreateEmployeeModal}>新建员工</button>
+            <button
+              type="button"
+              class="secondary"
+              ?disabled=${this.busy || this.employees.length === 0}
+              title="用当前主 openclaw.json 覆盖各员工配置中的 models / auth / plugins.entries / 默认模型，并复制 auth-profiles.json"
+              @click=${this.syncMainModelsToAllEmployees}
+            >
+              从 main 同步模型到全部员工
+            </button>
+          </div>
+        </div>
 
         <table>
           <thead>
             <tr>
               <th>用户名</th>
               <th>端口</th>
+              <th>工作区收紧</th>
               <th>网关 Token</th>
               <th>网关</th>
               <th>操作</th>
@@ -2754,13 +2878,18 @@ export class OpenClawAdminApp extends LitElement {
           <tbody>
             ${this.employees.length === 0
               ? html`<tr>
-                  <td colspan="5">暂无员工，请在上方创建。</td>
+                  <td colspan="6">暂无员工，请点击右上方「新建员工」添加。</td>
                 </tr>`
               : this.employees.map(
                   (emp) => html`
                     <tr>
                       <td>${emp.username}</td>
                       <td>${emp.port}</td>
+                      <td>
+                        ${employeeEffectiveWorkspaceTighten(emp)
+                          ? html`<span class="status-pill status-pill--run">已启用</span>`
+                          : html`<span class="sub">未启用</span>`}
+                      </td>
                       <td>
                         ${emp.gatewayToken
                           ? html`
@@ -2793,6 +2922,23 @@ export class OpenClawAdminApp extends LitElement {
                       </td>
                       <td>
                         <div class="actions">
+                          <button
+                            type="button"
+                            class="secondary"
+                            ?disabled=${this.busy}
+                            @click=${() => this.openEditEmployee(emp)}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            class="secondary"
+                            ?disabled=${this.busy}
+                            title="用当前主配置的模型/鉴权覆盖该员工 openclaw.json 中的对应项"
+                            @click=${() => this.syncMainModelsForEmployee(emp.id, emp.username)}
+                          >
+                            同步模型
+                          </button>
                           ${emp.gatewayRunning
                             ? html`<button
                                 type="button"
@@ -2841,6 +2987,167 @@ export class OpenClawAdminApp extends LitElement {
                 )}
           </tbody>
         </table>
+        ${this.renderCreateEmployeeModal()}
+        ${this.renderEditEmployeeModal()}
+      </div>
+    `;
+  }
+
+  private renderCreateEmployeeModal() {
+    if (!this.createEmployeeModalOpen) {
+      return nothing;
+    }
+    return html`
+      <div class="modal-backdrop" @click=${this.closeCreateEmployeeModal}>
+        <div
+          class="modal-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="create-emp-modal-title"
+          @click=${(e: Event) => e.stopPropagation()}
+        >
+          <h2 id="create-emp-modal-title">新建员工</h2>
+          <form @submit=${this.onCreate}>
+            <div class="row__cell">
+              <label><span class="req" aria-hidden="true">*</span>用户名（小写字母、数字、_ -）</label>
+              <input
+                type="text"
+                autocomplete="off"
+                required
+                .value=${this.newUsername}
+                @input=${(e: Event) => (this.newUsername = (e.target as HTMLInputElement).value)}
+              />
+            </div>
+            <div>
+              <div class="row__port-label-row">
+                <label><span class="req" aria-hidden="true">*</span>网关端口</label>
+                <details class="port-hint-wrap">
+                  <summary class="info-icon-btn" aria-label="端口范围说明">${ICON_INFO}</summary>
+                  <div class="port-hint-pop">
+                    建议端口在 <strong>18800–28800</strong> 之间，便于与常见默认端口错开（仍须为
+                    <strong>1024–65535</strong> 内未占用端口）。
+                  </div>
+                </details>
+              </div>
+              <input
+                type="number"
+                min="1024"
+                max="65535"
+                placeholder="例如 18800"
+                autocomplete="off"
+                required
+                .value=${this.newPort}
+                @input=${(e: Event) => (this.newPort = (e.target as HTMLInputElement).value)}
+              />
+            </div>
+            <div class="checkbox-row">
+              <input
+                id="tighten-workspace-new"
+                type="checkbox"
+                .checked=${this.newTightenWorkspaceScope}
+                @change=${(e: Event) =>
+                  (this.newTightenWorkspaceScope = (e.target as HTMLInputElement).checked)}
+              />
+              <label for="tighten-workspace-new">收紧用户可读范围至工作区</label>
+            </div>
+            <p class="field-hint" style="margin:-4px 0 10px;">
+              默认不勾选：工作区为员工目录下 <code>workspace/</code>，不额外限制工具。勾选后写入
+              <code>tools.fs.workspaceOnly</code> 并在 <code>tools.deny</code> 中加入
+              <code>exec</code>、<code>process</code>，使智能体主要通过 fs 类工具且仅能访问该工作区（多盘内容请用目录联接放进工作区）。
+            </p>
+            <div class="checkbox-row">
+              <input
+                id="inherit-main-models-modal"
+                type="checkbox"
+                .checked=${this.inheritMainModels}
+                @change=${(e: Event) => (this.inheritMainModels = (e.target as HTMLInputElement).checked)}
+              />
+              <label for="inherit-main-models-modal">
+                默认沿用 main 的模型配置（将主配置中的
+                <code>models</code>、<code>agents.defaults.model</code> / <code>models</code> 别名、<code>auth</code>、
+                <code>plugins.entries</code> 写入该员工的 <code>openclaw.json</code>，并把主环境里的
+                <code>agents/main/agent/auth-profiles.json</code> 复制到该员工独立 state，否则仅有
+                <code>auth.profiles</code> 元数据无法解析 API Key）。不包含 <code>workspace</code> 等路径字段。取消勾选则仅创建带网关 Token 的最小配置。
+              </label>
+            </div>
+            ${this.formError ? html`<div class="err">${this.formError}</div>` : ""}
+            <div class="modal-actions">
+              <button type="button" class="secondary" ?disabled=${this.busy} @click=${this.closeCreateEmployeeModal}>
+                取消
+              </button>
+              <button type="submit" ?disabled=${this.busy}>创建并启动网关</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderEditEmployeeModal() {
+    if (!this.editEmployeeModalOpen || !this.editTargetEmployeeId) {
+      return nothing;
+    }
+    const uname =
+      this.employees.find((e) => e.id === this.editTargetEmployeeId)?.username ?? this.editTargetEmployeeId;
+    return html`
+      <div class="modal-backdrop" @click=${this.closeEditEmployeeModal}>
+        <div
+          class="modal-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="edit-emp-modal-title"
+          @click=${(e: Event) => e.stopPropagation()}
+        >
+          <h2 id="edit-emp-modal-title">编辑员工</h2>
+          <form @submit=${this.onSaveEditEmployee}>
+            <div class="row__cell">
+              <label>用户名</label>
+              <div class="read-only-field">${uname}</div>
+            </div>
+            <div>
+              <div class="row__port-label-row">
+                <label><span class="req" aria-hidden="true">*</span>网关端口</label>
+                <details class="port-hint-wrap">
+                  <summary class="info-icon-btn" aria-label="端口范围说明">${ICON_INFO}</summary>
+                  <div class="port-hint-pop">
+                    修改端口前须<strong>停止</strong>该员工网关。建议 <strong>18800–28800</strong>，须为
+                    <strong>1024–65535</strong> 内未占用端口。
+                  </div>
+                </details>
+              </div>
+              <input
+                type="number"
+                min="1024"
+                max="65535"
+                required
+                autocomplete="off"
+                .value=${this.editPort}
+                @input=${(e: Event) => (this.editPort = (e.target as HTMLInputElement).value)}
+              />
+            </div>
+            <div class="checkbox-row">
+              <input
+                id="tighten-workspace-edit"
+                type="checkbox"
+                .checked=${this.editTightenWorkspaceScope}
+                @change=${(e: Event) =>
+                  (this.editTightenWorkspaceScope = (e.target as HTMLInputElement).checked)}
+              />
+              <label for="tighten-workspace-edit">收紧用户可读范围至工作区</label>
+            </div>
+            <p class="field-hint" style="margin:-4px 0 10px;">
+              与新建时相同：勾选后限制 fs 工具到工作区并禁用 <code>exec</code>/<code>process</code>；取消勾选会清除后台保存的收紧标记与旧版路径字段（若有自定义工作区路径也会被清除，工作区恢复为默认
+              <code>workspace/</code>）。
+            </p>
+            ${this.editModalError ? html`<div class="err">${this.editModalError}</div>` : ""}
+            <div class="modal-actions">
+              <button type="button" class="secondary" ?disabled=${this.busy} @click=${this.closeEditEmployeeModal}>
+                取消
+              </button>
+              <button type="submit" ?disabled=${this.busy}>保存</button>
+            </div>
+          </form>
+        </div>
       </div>
     `;
   }
