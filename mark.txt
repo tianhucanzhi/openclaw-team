@@ -17,7 +17,7 @@
   pnpm build && pnpm ui:build
 
 
-
+---------------------------------------------
 你要用局域网打开 主网关 18789
 在主配置 openclaw.json（常见为 ~/.openclaw/openclaw.json）里增加或修改，例如：
 
@@ -30,5 +30,9 @@
   }
 }
 bind 设为 lan（或 auto）后，才会在局域网网卡上监听。
+还要处理的配置
+gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback: true
+gateway.controlUi.dangerouslyDisableDeviceAuth: true
+-------------------------------------------------
 
  
