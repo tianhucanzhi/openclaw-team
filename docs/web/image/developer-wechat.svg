@@ -1,6 +1,0 @@
-﻿<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240">
-  <rect width="240" height="240" fill="#f8f9fa" stroke="#dee2e6" stroke-width="2" rx="8"/>
-  <text x="120" y="100" text-anchor="middle" font-family="system-ui,sans-serif" font-size="15" fill="#212529">WeChat (dev contact)</text>
-  <text x="120" y="128" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#6c757d">Replace with scannable QR image</text>
-  <text x="120" y="152" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" fill="#868e96">developer-wechat.svg</text>
-</svg>
