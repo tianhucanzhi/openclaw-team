@@ -4,3 +4,6 @@
 /packages
 /docs
 /ui/node_modules
+/ui_admin/data
+/ui_admin/node_modules
+*.zip

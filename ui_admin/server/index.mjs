@@ -8,6 +8,7 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   statSync,
   writeFileSync,
@@ -342,24 +343,120 @@ function resolveMainWorkspaceDir(cfg) {
   return "";
 }
 
-function resolveSharedMainSkillsDir(mainCfg) {
-  const mainWorkspace = resolveMainWorkspaceDir(mainCfg);
-  const candidates = [];
-  if (mainWorkspace) {
-    candidates.push(path.join(mainWorkspace, "skills"));
+function looksLikeSkillsDir(dir) {
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isFile() && entry.name.endsWith(".md")) {
+        return true;
+      }
+      if (entry.isDirectory() && existsSync(path.join(fullPath, "SKILL.md"))) {
+        return true;
+      }
+    }
+  } catch {
+    /* ignore */
   }
-  candidates.push(path.join(resolveMainOpenclawStateRoot(), "workspace", "skills"));
-  candidates.push(path.join(REPO_ROOT, "skills"));
-  for (const dir of candidates) {
+  return false;
+}
+
+/** Main agent `workspace/skills` only (Control UI "Workspace Skills"). */
+function resolveMainWorkspaceSkillsDir(mainCfg) {
+  const mainWorkspace = resolveMainWorkspaceDir(mainCfg);
+  if (!mainWorkspace) {
+    return "";
+  }
+  const dir = path.join(mainWorkspace, "skills");
+  try {
+    if (existsSync(dir)) {
+      return dir;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+/**
+ * OpenClaw built-in skills directory (Control UI "Built-in Skills"), aligned with
+ * `OPENCLAW_BUNDLED_SKILLS_DIR` and `src/agents/skills/bundled-dir.ts`.
+ */
+function resolveBundledSkillsDirForAdmin() {
+  const override = process.env.OPENCLAW_BUNDLED_SKILLS_DIR?.trim();
+  if (override && existsSync(override)) {
+    return override;
+  }
+  try {
+    const execDir = path.dirname(process.execPath);
+    const sibling = path.join(execDir, "skills");
+    if (existsSync(sibling) && looksLikeSkillsDir(sibling)) {
+      return sibling;
+    }
+  } catch {
+    /* ignore */
+  }
+  const repoSkills = path.join(REPO_ROOT, "skills");
+  if (existsSync(repoSkills) && looksLikeSkillsDir(repoSkills)) {
+    return repoSkills;
+  }
+  let current = __dirname;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const candidate = path.join(current, "skills");
+    if (existsSync(candidate) && looksLikeSkillsDir(candidate)) {
+      return candidate;
+    }
+    const next = path.dirname(current);
+    if (next === current) {
+      break;
+    }
+    current = next;
+  }
+  return "";
+}
+
+/**
+ * Ordered sources to seed employee `workspace/skills`:
+ * 1) Main agent workspace skills (Control UI "Workspace Skills")
+ * 2) Main state `workspace/skills` when present
+ * 3) Built-in / bundled skills tree (Control UI "Built-in Skills")
+ *
+ * Workspace layers run before bundled so custom skills win if names collide (bundled pass skips existing dirs).
+ */
+function resolveEmployeeSkillSeedSourceDirs(mainCfg) {
+  const dirs = [];
+  const seen = new Set();
+  const push = (raw) => {
+    const d = String(raw ?? "").trim();
+    if (!d) {
+      return;
+    }
+    let low;
     try {
-      if (existsSync(dir)) {
-        return dir;
+      low = path.normalize(d).toLowerCase();
+    } catch {
+      return;
+    }
+    if (seen.has(low)) {
+      return;
+    }
+    try {
+      if (!existsSync(d) || !looksLikeSkillsDir(d)) {
+        return;
       }
     } catch {
-      // ignore and try next candidate
+      return;
     }
-  }
-  return candidates[0];
+    seen.add(low);
+    dirs.push(d);
+  };
+  push(resolveMainWorkspaceSkillsDir(mainCfg));
+  push(path.join(resolveMainOpenclawStateRoot(), "workspace", "skills"));
+  push(resolveBundledSkillsDirForAdmin());
+  return dirs;
 }
 
 function isSafeSimpleName(name) {
@@ -451,39 +548,49 @@ async function listPublicSkills() {
 }
 
 async function seedSharedSkillsIntoWorkspace(params) {
-  const sharedSkillsDir = String(params.sharedSkillsDir ?? "").trim();
   const workspaceDir = String(params.workspaceDir ?? "").trim();
-  if (!sharedSkillsDir || !workspaceDir) {
+  if (!workspaceDir) {
     return;
   }
-  if (!existsSync(sharedSkillsDir)) {
+  const sourceDirs = Array.isArray(params.sourceDirs)
+    ? params.sourceDirs
+    : params.sharedSkillsDir
+      ? [String(params.sharedSkillsDir).trim()].filter(Boolean)
+      : [];
+  if (sourceDirs.length === 0) {
     return;
   }
   const targetSkillsDir = path.join(workspaceDir, "skills");
   await fs.mkdir(targetSkillsDir, { recursive: true });
-  let entries;
-  try {
-    entries = await fs.readdir(sharedSkillsDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
+  for (const sharedSkillsDir of sourceDirs) {
+    const dir = String(sharedSkillsDir ?? "").trim();
+    if (!dir || !existsSync(dir)) {
       continue;
     }
-    if (entry.name.startsWith(".")) {
-      continue;
-    }
-    const srcDir = path.join(sharedSkillsDir, entry.name);
-    const destDir = path.join(targetSkillsDir, entry.name);
-    if (existsSync(destDir)) {
-      // Keep employee-local edits; only seed skills that are missing locally.
-      continue;
-    }
+    let entries;
     try {
-      await fs.cp(srcDir, destDir, { recursive: true });
+      entries = await fs.readdir(dir, { withFileTypes: true });
     } catch {
-      // Best effort; skip individual skill copy failures.
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const srcDir = path.join(dir, entry.name);
+      const destDir = path.join(targetSkillsDir, entry.name);
+      if (existsSync(destDir)) {
+        // Keep employee-local edits; only seed skills that are missing locally.
+        continue;
+      }
+      try {
+        await fs.cp(srcDir, destDir, { recursive: true });
+      } catch {
+        // Best effort; skip individual skill copy failures.
+      }
     }
   }
 }
@@ -782,10 +889,10 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
     cfg.agents.defaults && typeof cfg.agents.defaults === "object" ? cfg.agents.defaults : {};
   cfg.agents.defaults.workspace = resolvedWriteWorkspace;
 
-  // Seed main shared skills into each employee workspace so subsequent edits stay local.
-  const sharedMainSkillsDir = resolveSharedMainSkillsDir(mainCfg);
+  // Seed main workspace + built-in skills into each employee workspace so subsequent edits stay local.
+  const employeeSkillSeedDirs = resolveEmployeeSkillSeedSourceDirs(mainCfg);
   await seedSharedSkillsIntoWorkspace({
-    sharedSkillsDir: sharedMainSkillsDir,
+    sourceDirs: employeeSkillSeedDirs,
     workspaceDir: resolvedWriteWorkspace,
   });
 
@@ -794,10 +901,27 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
   cfg.skills = cfg.skills && typeof cfg.skills === "object" ? cfg.skills : {};
   cfg.skills.load = cfg.skills.load && typeof cfg.skills.load === "object" ? cfg.skills.load : {};
   const extraDirsCurrent = Array.isArray(cfg.skills.load.extraDirs) ? cfg.skills.load.extraDirs : [];
-  const normalizedShared = sharedMainSkillsDir.trim().toLowerCase();
+  const seedDirNorm = new Set(
+    employeeSkillSeedDirs.map((d) => {
+      try {
+        return path.normalize(d).toLowerCase();
+      } catch {
+        return String(d).trim().toLowerCase();
+      }
+    }),
+  );
   const extraDirsNext = extraDirsCurrent
     .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((v) => v && v.trim().toLowerCase() !== normalizedShared);
+    .filter((v) => {
+      if (!v) {
+        return false;
+      }
+      try {
+        return !seedDirNorm.has(path.normalize(v).toLowerCase());
+      } catch {
+        return !seedDirNorm.has(v.trim().toLowerCase());
+      }
+    });
   cfg.skills.load.extraDirs = extraDirsNext;
 
   // Admin "tighten to workspace": fs tools stay under `agents.defaults.workspace` and

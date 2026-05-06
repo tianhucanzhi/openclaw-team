@@ -17,6 +17,12 @@
   pnpm build && pnpm ui:build
 
 
+
+
+后台管理做了开机自启
+systemctl restart openclaw-ui-admin.service
+/etc/systemd/system/openclaw-ui-admin.service #服务写在了这里
+
 ---------------------------------------------
 你要用局域网打开 主网关 18789
 在主配置 openclaw.json（常见为 ~/.openclaw/openclaw.json）里增加或修改，例如：
