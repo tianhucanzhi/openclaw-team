@@ -359,6 +359,7 @@ export class OpenClawAdminApp extends LitElement {
     usagePayload: { state: true },
     skillsLoading: { state: true },
     skillsError: { state: true },
+    skillsActionOk: { state: true },
     skillsPayload: { state: true },
     skillsAgentId: { state: true },
     publicSkillsLoading: { state: true },
@@ -423,6 +424,7 @@ export class OpenClawAdminApp extends LitElement {
   usagePayload: UsagePayload | null = null;
   skillsLoading = false;
   skillsError: string | null = null;
+  skillsActionOk: string | null = null;
   skillsPayload: SkillsPayload | null = null;
   skillsAgentId = "main";
   publicSkillsLoading = false;
@@ -2184,6 +2186,7 @@ export class OpenClawAdminApp extends LitElement {
   private async loadSkillsMonitor() {
     this.skillsLoading = true;
     this.skillsError = null;
+    this.skillsActionOk = null;
     const r = await api<SkillsPayload>(
       `/api/employees/skills?agentId=${encodeURIComponent(this.skillsAgentId)}`,
     );
@@ -2194,6 +2197,54 @@ export class OpenClawAdminApp extends LitElement {
       return;
     }
     this.skillsPayload = r.data ?? null;
+  }
+
+  private async promoteSkillFromMonitorToPublic(employeeId: string, skillName: string) {
+    this.skillsActionOk = null;
+    this.skillsError = null;
+    this.busy = true;
+    const r = await api<{ copied?: boolean; skipped?: boolean; message?: string }>(
+      "/api/employees/skills/promote-public",
+      { method: "POST", json: { employeeId, skillName } },
+    );
+    this.busy = false;
+    if (!r.ok) {
+      this.skillsError = r.error ?? "操作失败";
+      return;
+    }
+    this.skillsActionOk =
+      typeof r.data?.message === "string" && r.data.message.trim()
+        ? r.data.message
+        : "完成";
+    if (r.data?.copied) {
+      void this.loadPublicSkills();
+    }
+  }
+
+  private async distributeSkillFromMonitorToOthers(employeeId: string, skillName: string) {
+    if (
+      !confirm(
+        `将技能「${skillName}」复制到所有其他员工的 workspace/skills/ 下？\n已在目标员工处存在的同名目录将跳过，不会覆盖。`,
+      )
+    ) {
+      return;
+    }
+    this.skillsActionOk = null;
+    this.skillsError = null;
+    this.busy = true;
+    const r = await api<{ message?: string; copied?: number; skipped?: number }>(
+      "/api/employees/skills/distribute",
+      { method: "POST", json: { employeeId, skillName } },
+    );
+    this.busy = false;
+    if (!r.ok) {
+      this.skillsError = r.error ?? "操作失败";
+      return;
+    }
+    this.skillsActionOk =
+      typeof r.data?.message === "string" && r.data.message.trim()
+        ? r.data.message
+        : "已完成分发";
   }
 
   private async loadDashboardData() {
@@ -3460,6 +3511,7 @@ export class OpenClawAdminApp extends LitElement {
         </div>
 
         ${this.skillsError ? html`<div class="err">${this.skillsError}</div>` : ""}
+        ${this.skillsActionOk ? html`<div class="ok">${this.skillsActionOk}</div>` : ""}
         ${this.skillsLoading && !payload ? html`<p class="sub">加载中…</p>` : ""}
 
         ${payload
@@ -3543,6 +3595,7 @@ export class OpenClawAdminApp extends LitElement {
                                               <th>来源</th>
                                               <th class="num">状态</th>
                                               <th class="num">缺依赖</th>
+                                              <th>操作</th>
                                             </tr>
                                           </thead>
                                           <tbody>
@@ -3561,6 +3614,34 @@ export class OpenClawAdminApp extends LitElement {
                                                           : "不可用"}
                                                   </td>
                                                   <td class="num">${new Intl.NumberFormat("zh-CN").format(row.missingCount)}</td>
+                                                  <td style="white-space:nowrap;">
+                                                    ${row.bundled
+                                                      ? html`<span class="sub" style="margin:0;">—</span>`
+                                                      : html`
+                                                          <button
+                                                            type="button"
+                                                            class="secondary"
+                                                            style="font-size:0.8rem;padding:4px 8px;margin-right:6px;"
+                                                            ?disabled=${this.busy}
+                                                            title="复制到仓库公共 skills/（已存在则跳过）"
+                                                            @click=${() =>
+                                                              void this.promoteSkillFromMonitorToPublic(emp.id, row.name)}
+                                                          >
+                                                            公共库
+                                                          </button>
+                                                          <button
+                                                            type="button"
+                                                            class="secondary"
+                                                            style="font-size:0.8rem;padding:4px 8px;"
+                                                            ?disabled=${this.busy}
+                                                            title="复制到其他员工 workspace/skills（已存在则跳过）"
+                                                            @click=${() =>
+                                                              void this.distributeSkillFromMonitorToOthers(emp.id, row.name)}
+                                                          >
+                                                            分给他人
+                                                          </button>
+                                                        `}
+                                                  </td>
                                                 </tr>
                                               `,
                                             )}

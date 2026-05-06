@@ -19,6 +19,12 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  distributeEmployeeSkillToOtherEmployees,
+  promoteEmployeeSkillToPublic,
+  respondEmployeesSkillsMonitoring,
+} from "./skills-monitor.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const OPENCLAW_ENTRY = path.join(REPO_ROOT, "openclaw.mjs");
@@ -1626,64 +1632,6 @@ function sanitizeSessionsUsageForAdmin(raw) {
   return mergeUsageAggregatesFromSessionsIfNeeded(raw, out);
 }
 
-function sanitizeSkillsStatusForAdmin(raw) {
-  if (!raw || typeof raw !== "object") {
-    return null;
-  }
-  const rows = Array.isArray(raw.skills) ? raw.skills : [];
-  const skills = rows
-    .filter((x) => x && typeof x === "object")
-    .map((row) => ({
-      name: typeof row.name === "string" ? row.name : "",
-      source: typeof row.source === "string" ? row.source : "",
-      bundled: row.bundled === true,
-      skillKey: typeof row.skillKey === "string" ? row.skillKey : "",
-      eligible: row.eligible === true,
-      disabled: row.disabled === true,
-      blockedByAllowlist: row.blockedByAllowlist === true,
-      missingCount: Array.isArray(row.missing) ? row.missing.length : 0,
-      installCount: Array.isArray(row.install) ? row.install.length : 0,
-    }))
-    .filter((x) => x.name)
-    .slice(0, 300);
-  const summary = {
-    total: skills.length,
-    eligible: skills.filter((x) => x.eligible).length,
-    disabled: skills.filter((x) => x.disabled).length,
-    blockedByAllowlist: skills.filter((x) => x.blockedByAllowlist).length,
-    withMissing: skills.filter((x) => x.missingCount > 0).length,
-    withInstallOption: skills.filter((x) => x.installCount > 0).length,
-  };
-  return {
-    workspaceDir: typeof raw.workspaceDir === "string" ? raw.workspaceDir : "",
-    managedSkillsDir: typeof raw.managedSkillsDir === "string" ? raw.managedSkillsDir : "",
-    summary,
-    skills,
-  };
-}
-
-async function fetchSkillsStatusWithRetry(params) {
-  const firstTimeoutMs = 45_000;
-  const retryTimeoutMs = 60_000;
-  try {
-    return await spawnOpenclawGatewayCall("skills.status", params.callParams, {
-      port: params.port,
-      token: params.token,
-      timeoutMs: firstTimeoutMs,
-    });
-  } catch (err) {
-    const msg = String(err?.message ?? err);
-    if (!/timeout/i.test(msg)) {
-      throw err;
-    }
-    return await spawnOpenclawGatewayCall("skills.status", params.callParams, {
-      port: params.port,
-      token: params.token,
-      timeoutMs: retryTimeoutMs,
-    });
-  }
-}
-
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
   const pathname = url.pathname;
@@ -2113,55 +2061,62 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (method === "GET" && pathname === "/api/employees/skills") {
-        const agentId = String(url.searchParams.get("agentId") ?? "main").trim() || "main";
-        const callParams = { agentId };
-        const store = loadStore();
-        const withStatus = attachGatewayStatus(store.employees);
-        const employees = await Promise.all(
-          withStatus.map(async (emp) => {
-            const base = {
-              id: emp.id,
-              username: emp.username,
-              port: emp.port,
-              gatewayRunning: emp.gatewayRunning,
-              gatewayPid: emp.gatewayPid ?? null,
-            };
-            if (!emp.gatewayRunning) {
-              return {
-                ...base,
-                ok: true,
-                error: null,
-                skills: null,
-                skipped: true,
-                note: "网关未启动，已跳过采集",
-              };
-            }
-            if (!emp.gatewayToken) {
-              return { ...base, ok: false, error: "未设置网关 Token", skills: null };
-            }
-            try {
-              const raw = await fetchSkillsStatusWithRetry({
-                callParams,
-                port: emp.port,
-                token: emp.gatewayToken,
-              });
-              return {
-                ...base,
-                ok: true,
-                error: null,
-                skills: sanitizeSkillsStatusForAdmin(raw),
-              };
-            } catch (err) {
-              return {
-                ...base,
-                ok: false,
-                error: String(err?.message ?? err),
-                skills: null,
-              };
-            }
-          }),
-        );
-        json(res, 200, { agentId, employees });
+        await respondEmployeesSkillsMonitoring(url, {
+          loadStore,
+          attachGatewayStatus,
+          spawnOpenclawGatewayCall,
+          json,
+          res,
+        });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/employees/skills/promote-public") {
+        if (!isAdmin(req)) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
+        const raw = await readBody(req);
+        const body = raw ? JSON.parse(raw) : {};
+        const employeeId = typeof body.employeeId === "string" ? body.employeeId.trim() : "";
+        const skillName = typeof body.skillName === "string" ? body.skillName.trim() : "";
+        const out = await promoteEmployeeSkillToPublic({
+          employeeId,
+          skillName,
+          loadStore,
+          resolveEmployeeWorkspaceWriteAbs,
+          publicSkillsRoot: PUBLIC_SKILLS_ROOT,
+          isSafeSimpleName,
+        });
+        if (!out.ok) {
+          json(res, 400, { error: out.error ?? "failed" });
+          return;
+        }
+        json(res, 200, out);
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/employees/skills/distribute") {
+        if (!isAdmin(req)) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
+        const raw = await readBody(req);
+        const body = raw ? JSON.parse(raw) : {};
+        const employeeId = typeof body.employeeId === "string" ? body.employeeId.trim() : "";
+        const skillName = typeof body.skillName === "string" ? body.skillName.trim() : "";
+        const out = await distributeEmployeeSkillToOtherEmployees({
+          employeeId,
+          skillName,
+          loadStore,
+          resolveEmployeeWorkspaceWriteAbs,
+          isSafeSimpleName,
+        });
+        if (!out.ok) {
+          json(res, 400, { error: out.error ?? "failed" });
+          return;
+        }
+        json(res, 200, out);
         return;
       }
 
