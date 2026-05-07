@@ -2,7 +2,7 @@
  * OpenClaw admin API + optional static hosting for `dist/ui-admin`.
  * Default admin: admin / admin1234 (override with OPENCLAW_ADMIN_USER / OPENCLAW_ADMIN_PASSWORD).
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import {
   createWriteStream,
@@ -1190,9 +1190,109 @@ async function removeDirWithRetry(dirPath, options = {}) {
   }
 }
 
+/**
+ * Best-effort: kill any OS process currently listening on a TCP port.
+ * Returns the list of PIDs we attempted to terminate (may be empty).
+ *
+ * Cross-platform: Windows (PowerShell Get-NetTCPConnection + Stop-Process),
+ * macOS/Linux (lsof / fuser). Never throws; failures are swallowed because
+ * this is a pre-flight cleanup before spawning the employee gateway.
+ *
+ * @param {number} port
+ */
+function killProcessesOnTcpPort(port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return [];
+  }
+  const ownPid = process.pid;
+  /** @type {number[]} */
+  const killedPids = [];
+  const tryKill = (rawPid) => {
+    const pid = Number.parseInt(String(rawPid).trim(), 10);
+    if (!Number.isFinite(pid) || pid <= 0 || pid === ownPid) {
+      return;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+      killedPids.push(pid);
+    } catch {
+      // ignore: dead, missing privileges, or already gone
+    }
+  };
+  try {
+    if (process.platform === "win32") {
+      const ps = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `try { Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess } catch { }`,
+        ],
+        { encoding: "utf8", windowsHide: true, timeout: 4000 },
+      );
+      const stdout = String(ps.stdout ?? "");
+      const pids = stdout
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      for (const pidStr of pids) {
+        const pid = Number.parseInt(pidStr, 10);
+        if (!Number.isFinite(pid) || pid <= 0 || pid === ownPid) {
+          continue;
+        }
+        try {
+          spawnSync(
+            "powershell.exe",
+            [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `Stop-Process -Id ${pid} -Force -ErrorAction SilentlyContinue`,
+            ],
+            { encoding: "utf8", windowsHide: true, timeout: 4000 },
+          );
+          killedPids.push(pid);
+        } catch {
+          // ignore
+        }
+      }
+    } else {
+      const lsof = spawnSync("lsof", ["-tnP", `-iTCP:${port}`, "-sTCP:LISTEN"], {
+        encoding: "utf8",
+        timeout: 4000,
+      });
+      const out = String(lsof.stdout ?? "");
+      if (out.trim()) {
+        for (const line of out.split(/\r?\n/)) {
+          tryKill(line);
+        }
+      } else {
+        // Fallback when lsof is unavailable: fuser reports PIDs on stdout (newer versions) or stderr.
+        const fuser = spawnSync("fuser", [`${port}/tcp`], {
+          encoding: "utf8",
+          timeout: 4000,
+        });
+        const merged = `${fuser.stdout ?? ""} ${fuser.stderr ?? ""}`;
+        for (const tok of merged.split(/\s+/)) {
+          tryKill(tok);
+        }
+      }
+    }
+  } catch {
+    // Pre-flight cleanup must not block start.
+  }
+  return killedPids;
+}
+
 async function startGatewayProcess(emp) {
   const id = emp.id;
   stopGatewayFor(id);
+  const killed = killProcessesOnTcpPort(Number(emp.port));
+  if (killed.length > 0) {
+    // Brief grace so the OS can release the listening socket before we spawn.
+    await sleep(400);
+  }
   if (!existsSync(OPENCLAW_ENTRY)) {
     throw new Error(`未找到 OpenClaw 入口: ${OPENCLAW_ENTRY}`);
   }
@@ -1219,6 +1319,11 @@ async function startGatewayProcess(emp) {
   const logPath = path.join(dir, "gateway.log");
   const logStream = createWriteStream(logPath, { flags: "a" });
   logStream.write(`\n--- gateway start ${new Date().toISOString()} port=${emp.port} ---\n`);
+  if (killed.length > 0) {
+    logStream.write(
+      `[ui-admin] killed pre-existing process(es) holding port ${emp.port}: ${killed.join(", ")}\n`,
+    );
+  }
 
   const child = spawn(
     process.execPath,
