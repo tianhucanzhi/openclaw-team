@@ -20,6 +20,7 @@ import type { ResolvedTheme, ThemeMode, ThemeName } from "./theme.ts";
 import type {
   AgentsListResult,
   AgentsFilesListResult,
+  AgentsWorkspaceBrowseResult,
   AgentIdentityResult,
   AttentionItem,
   ChannelsStatusSnapshot,
@@ -212,6 +213,12 @@ export type AppViewState = {
   agentFileDrafts: Record<string, string>;
   agentFileActive: string | null;
   agentFileSaving: boolean;
+  projectFilesLoading: boolean;
+  projectFilesError: string | null;
+  projectFilesList: AgentsWorkspaceBrowseResult | null;
+  projectFilesCurrentPath: string;
+  projectFilesUploading: boolean;
+  projectFilesDeletingPath: string | null;
   agentIdentityLoading: boolean;
   agentIdentityError: string | null;
   agentIdentityById: Record<string, AgentIdentityResult>;

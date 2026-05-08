@@ -113,6 +113,8 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "talk.config",
     "agents.files.list",
     "agents.files.get",
+    "agents.workspace.browse",
+    "agents.workspace.download",
   ],
   [WRITE_SCOPE]: [
     "message.action",
@@ -141,6 +143,8 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "doctor.memory.resetGroundedShortTerm",
     "push.test",
     "node.pending.enqueue",
+    "agents.workspace.upload",
+    "agents.workspace.delete",
   ],
   [ADMIN_SCOPE]: [
     "channels.logout",

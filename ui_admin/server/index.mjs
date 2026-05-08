@@ -980,6 +980,7 @@ async function writeEmployeeGatewayConfig(emp, options = {}) {
   await fs.mkdir(dir, { recursive: true });
   await fs.mkdir(defaultWorkspaceDir, { recursive: true });
   await fs.mkdir(resolvedWriteWorkspace, { recursive: true });
+  await fs.mkdir(path.join(resolvedWriteWorkspace, "project"), { recursive: true });
   await fs.writeFile(configPath, `${JSON.stringify(cfg, null, 2)}\n`, "utf8");
 
   if (!options.mergeIntoExisting && options.inheritMainModels !== false) {

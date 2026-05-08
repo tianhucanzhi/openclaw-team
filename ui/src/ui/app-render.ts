@@ -94,6 +94,13 @@ import { loadLogs } from "./controllers/logs.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadPresence } from "./controllers/presence.ts";
 import {
+  deleteProjectPath,
+  downloadWorkspaceFile,
+  loadProjectFiles,
+  uploadProjectFile,
+  uploadProjectFiles,
+} from "./controllers/project-files.ts";
+import {
   branchSessionFromCheckpoint,
   deleteSessionsAndRefresh,
   loadSessions,
@@ -134,6 +141,7 @@ import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderLoginGate } from "./views/login-gate.ts";
 import { renderOverview } from "./views/overview.ts";
+import { renderProjectFiles } from "./views/project-files.ts";
 import { renderAgentsTeamPanel } from "./views/agents-panels-team.ts";
 
 // Lazy-loaded view modules – deferred so the initial bundle stays small.
@@ -1623,6 +1631,46 @@ export function renderApp(state: AppViewState) {
                 },
               }),
             )
+          : nothing}
+        ${state.tab === "projectFiles"
+          ? renderProjectFiles({
+              loading: state.projectFilesLoading,
+              error: state.projectFilesError,
+              workspace: state.projectFilesList?.workspace ?? "",
+              currentPath: state.projectFilesList?.currentPath ?? state.projectFilesCurrentPath ?? "",
+              canWrite: state.projectFilesList?.canWrite ?? false,
+              entries: state.projectFilesList?.entries ?? [],
+              uploading: state.projectFilesUploading,
+              deletingPath: state.projectFilesDeletingPath,
+              onOpenPath: (nextPath) => {
+                state.projectFilesCurrentPath = nextPath;
+                void loadProjectFiles(state, state.agentsList?.defaultId ?? "main", nextPath);
+              },
+              onGoUp: () => {
+                const current = state.projectFilesList?.currentPath ?? state.projectFilesCurrentPath ?? "";
+                if (!current) {
+                  return;
+                }
+                const parts = current.split("/").filter(Boolean);
+                parts.pop();
+                const parent = parts.join("/");
+                state.projectFilesCurrentPath = parent;
+                void loadProjectFiles(state, state.agentsList?.defaultId ?? "main", parent);
+              },
+              onDownload: (filePath) =>
+                downloadWorkspaceFile(state, state.agentsList?.defaultId ?? "main", filePath),
+              onDelete: (deletePath) =>
+                deleteProjectPath(state, state.agentsList?.defaultId ?? "main", deletePath),
+              onUploadFile: (file) => {
+                const current = state.projectFilesList?.currentPath ?? state.projectFilesCurrentPath ?? "";
+                const target = `${current ? `${current}/` : ""}${file.name}`;
+                void uploadProjectFile(state, state.agentsList?.defaultId ?? "main", target, file);
+              },
+              onUploadFolder: (files) => {
+                const current = state.projectFilesList?.currentPath ?? state.projectFilesCurrentPath ?? "";
+                void uploadProjectFiles(state, state.agentsList?.defaultId ?? "main", current, files);
+              },
+            })
           : nothing}
         ${state.tab === "skills"
           ? lazyRender(lazySkills, (m) =>

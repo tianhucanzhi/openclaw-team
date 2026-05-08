@@ -178,6 +178,92 @@ export const AgentsFilesSetResultSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AgentsWorkspaceEntrySchema = Type.Object(
+  {
+    name: NonEmptyString,
+    path: Type.String(),
+    kind: Type.Union([Type.Literal("file"), Type.Literal("directory")]),
+    size: Type.Optional(Type.Integer({ minimum: 0 })),
+    updatedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceBrowseParamsSchema = Type.Object(
+  {
+    agentId: NonEmptyString,
+    path: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceBrowseResultSchema = Type.Object(
+  {
+    agentId: NonEmptyString,
+    workspace: NonEmptyString,
+    currentPath: Type.String(),
+    canWrite: Type.Boolean(),
+    entries: Type.Array(AgentsWorkspaceEntrySchema),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceDownloadParamsSchema = Type.Object(
+  {
+    agentId: NonEmptyString,
+    path: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceDownloadResultSchema = Type.Object(
+  {
+    agentId: NonEmptyString,
+    workspace: NonEmptyString,
+    fileName: NonEmptyString,
+    path: NonEmptyString,
+    contentBase64: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceUploadParamsSchema = Type.Object(
+  {
+    agentId: NonEmptyString,
+    path: NonEmptyString,
+    contentBase64: Type.String(),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceUploadResultSchema = Type.Object(
+  {
+    ok: Type.Literal(true),
+    agentId: NonEmptyString,
+    workspace: NonEmptyString,
+    path: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceDeleteParamsSchema = Type.Object(
+  {
+    agentId: NonEmptyString,
+    path: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentsWorkspaceDeleteResultSchema = Type.Object(
+  {
+    ok: Type.Literal(true),
+    agentId: NonEmptyString,
+    workspace: NonEmptyString,
+    path: NonEmptyString,
+  },
+  { additionalProperties: false },
+);
+
 export const ModelsListParamsSchema = Type.Object({}, { additionalProperties: false });
 
 export const ModelsListResultSchema = Type.Object(

@@ -36,6 +36,7 @@ import { loadExecApprovals, type ExecApprovalsState } from "./controllers/exec-a
 import { loadLogs, type LogsState } from "./controllers/logs.ts";
 import { loadNodes, type NodesState } from "./controllers/nodes.ts";
 import { loadPresence, type PresenceState } from "./controllers/presence.ts";
+import { loadProjectFiles, type ProjectFilesState } from "./controllers/project-files.ts";
 import { loadSessions, type SessionsState } from "./controllers/sessions.ts";
 import { loadSkills, type SkillsState } from "./controllers/skills.ts";
 import { loadUsage, type UsageState } from "./controllers/usage.ts";
@@ -105,6 +106,7 @@ type SettingsAppHost = SettingsHost &
   LogsState &
   NodesState &
   PresenceState &
+  ProjectFilesState &
   SessionsState &
   SkillsState &
   UsageState & {
@@ -361,6 +363,11 @@ export async function refreshActiveTab(host: SettingsHost) {
     case "cron":
       await loadCron(host);
       return;
+    case "projectFiles": {
+      const agentId = host.agentsList?.defaultId ?? "main";
+      await loadProjectFiles(app, agentId, host.projectFilesCurrentPath ?? "");
+      return;
+    }
     case "skills":
       await loadSkills(app);
       return;

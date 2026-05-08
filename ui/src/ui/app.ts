@@ -82,6 +82,7 @@ import { VALID_THEME_NAMES, type ResolvedTheme, type ThemeMode, type ThemeName }
 import type {
   AgentsListResult,
   AgentsFilesListResult,
+  AgentsWorkspaceBrowseResult,
   AgentIdentityResult,
   ConfigSnapshot,
   ConfigUiHints,
@@ -317,6 +318,12 @@ export class OpenClawApp extends LitElement {
   @state() agentFileDrafts: Record<string, string> = {};
   @state() agentFileActive: string | null = null;
   @state() agentFileSaving = false;
+  @state() projectFilesLoading = false;
+  @state() projectFilesError: string | null = null;
+  @state() projectFilesList: AgentsWorkspaceBrowseResult | null = null;
+  @state() projectFilesCurrentPath = "";
+  @state() projectFilesUploading = false;
+  @state() projectFilesDeletingPath: string | null = null;
   @state() agentIdentityLoading = false;
   @state() agentIdentityError: string | null = null;
   @state() agentIdentityById: Record<string, AgentIdentityResult> = {};

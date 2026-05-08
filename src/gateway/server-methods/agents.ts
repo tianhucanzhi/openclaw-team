@@ -46,6 +46,10 @@ import {
   validateAgentsFilesGetParams,
   validateAgentsFilesListParams,
   validateAgentsFilesSetParams,
+  validateAgentsWorkspaceBrowseParams,
+  validateAgentsWorkspaceDeleteParams,
+  validateAgentsWorkspaceDownloadParams,
+  validateAgentsWorkspaceUploadParams,
   validateAgentsListParams,
   validateAgentsUpdateParams,
 } from "../protocol/index.js";
@@ -295,6 +299,36 @@ async function statFileSafely(filePath: string): Promise<FileMeta | null> {
   } catch {
     return null;
   }
+}
+
+function normalizeWorkspaceRelativePath(rawPath: unknown): string {
+  const normalized = typeof rawPath === "string" ? rawPath.replace(/\\/g, "/").trim() : "";
+  if (!normalized || normalized === ".") {
+    return "";
+  }
+  return normalized.replace(/^\/+/, "").replace(/\/+/g, "/");
+}
+
+function isProjectScopedPath(relPath: string): boolean {
+  const lower = relPath.toLowerCase();
+  return lower === "project" || lower.startsWith("project/");
+}
+
+function resolveAgentWorkspaceDirOrRespond(
+  params: Record<string, unknown>,
+  respond: RespondFn,
+): { agentId: string; workspaceDir: string } | null {
+  const cfg = loadConfig();
+  const rawAgentId = params.agentId;
+  const agentId = resolveAgentIdOrError(
+    typeof rawAgentId === "string" || typeof rawAgentId === "number" ? String(rawAgentId) : "",
+    cfg,
+  );
+  if (!agentId) {
+    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unknown agent id"));
+    return null;
+  }
+  return { agentId, workspaceDir: resolveAgentWorkspaceDir(cfg, agentId) };
 }
 
 async function listAgentFiles(workspaceDir: string, options?: { hideBootstrap?: boolean }) {
@@ -964,5 +998,207 @@ export const agentsHandlers: GatewayRequestHandlers = {
       },
       undefined,
     );
+  },
+  "agents.workspace.browse": async ({ params, respond }) => {
+    if (!validateAgentsWorkspaceBrowseParams(params)) {
+      respondInvalidMethodParams(respond, "agents.workspace.browse", validateAgentsWorkspaceBrowseParams.errors);
+      return;
+    }
+    const resolved = resolveAgentWorkspaceDirOrRespond(params, respond);
+    if (!resolved) {
+      return;
+    }
+    const { agentId, workspaceDir } = resolved;
+    const currentPath = normalizeWorkspaceRelativePath(params.path);
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.mkdir(path.join(workspaceDir, "project"), { recursive: true });
+    const workspaceReal = await resolveWorkspaceRealPath(workspaceDir);
+    const targetDir = path.resolve(workspaceReal, currentPath || ".");
+    try {
+      await assertNoPathAliasEscape({
+        absolutePath: targetDir,
+        rootPath: workspaceReal,
+        boundaryLabel: "workspace root",
+      });
+    } catch {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "invalid workspace path"));
+      return;
+    }
+    let rows: Awaited<ReturnType<typeof fs.readdir>>;
+    try {
+      const stat = await fs.stat(targetDir);
+      if (!stat.isDirectory()) {
+        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "path is not a directory"));
+        return;
+      }
+      rows = await fs.readdir(targetDir, { withFileTypes: true });
+    } catch {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "workspace path not found"));
+      return;
+    }
+    const entries = await Promise.all(
+      rows
+        .filter((entry) => !entry.name.startsWith("."))
+        .map(async (entry) => {
+          const rel = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+          const abs = path.join(targetDir, entry.name);
+          try {
+            const st = await fs.stat(abs);
+            if (st.isDirectory()) {
+              return {
+                name: entry.name,
+                path: rel,
+                kind: "directory" as const,
+                updatedAtMs: Math.floor(st.mtimeMs),
+              };
+            }
+            if (st.isFile()) {
+              return {
+                name: entry.name,
+                path: rel,
+                kind: "file" as const,
+                size: st.size,
+                updatedAtMs: Math.floor(st.mtimeMs),
+              };
+            }
+          } catch {
+            return null;
+          }
+          return null;
+        }),
+    );
+    entries.sort((a, b) => {
+      if (!a || !b) {
+        return 0;
+      }
+      if (a.kind !== b.kind) {
+        return a.kind === "directory" ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, "en");
+    });
+    respond(
+      true,
+      {
+        agentId,
+        workspace: workspaceDir,
+        currentPath,
+        canWrite: isProjectScopedPath(currentPath),
+        entries: entries.filter(Boolean),
+      },
+      undefined,
+    );
+  },
+  "agents.workspace.download": async ({ params, respond }) => {
+    if (!validateAgentsWorkspaceDownloadParams(params)) {
+      respondInvalidMethodParams(
+        respond,
+        "agents.workspace.download",
+        validateAgentsWorkspaceDownloadParams.errors,
+      );
+      return;
+    }
+    const resolved = resolveAgentWorkspaceDirOrRespond(params, respond);
+    if (!resolved) {
+      return;
+    }
+    const { agentId, workspaceDir } = resolved;
+    const relPath = normalizeWorkspaceRelativePath(params.path);
+    if (!relPath) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "file path required"));
+      return;
+    }
+    const pathResolved = await resolveAgentWorkspaceFilePath({
+      workspaceDir,
+      name: relPath,
+      allowMissing: false,
+    });
+    if (pathResolved.kind !== "ready") {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "file path invalid"));
+      return;
+    }
+    try {
+      const content = await fs.readFile(pathResolved.ioPath);
+      respond(
+        true,
+        {
+          agentId,
+          workspace: workspaceDir,
+          fileName: path.basename(relPath),
+          path: relPath,
+          contentBase64: content.toString("base64"),
+        },
+        undefined,
+      );
+    } catch {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "file read failed"));
+    }
+  },
+  "agents.workspace.upload": async ({ params, respond }) => {
+    if (!validateAgentsWorkspaceUploadParams(params)) {
+      respondInvalidMethodParams(respond, "agents.workspace.upload", validateAgentsWorkspaceUploadParams.errors);
+      return;
+    }
+    const resolved = resolveAgentWorkspaceDirOrRespond(params, respond);
+    if (!resolved) {
+      return;
+    }
+    const { agentId, workspaceDir } = resolved;
+    const relPath = normalizeWorkspaceRelativePath(params.path);
+    if (!relPath || !isProjectScopedPath(relPath)) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "upload allowed only under project/"));
+      return;
+    }
+    const contentBase64 = typeof params.contentBase64 === "string" ? params.contentBase64 : "";
+    let data: Buffer;
+    try {
+      data = Buffer.from(contentBase64, "base64");
+    } catch {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "invalid base64 content"));
+      return;
+    }
+    await fs.mkdir(workspaceDir, { recursive: true });
+    await fs.mkdir(path.join(workspaceDir, "project"), { recursive: true });
+    const workspaceReal = await resolveWorkspaceRealPath(workspaceDir);
+    try {
+      await agentsHandlerDeps.writeFileWithinRoot({
+        rootDir: workspaceReal,
+        relativePath: relPath,
+        data,
+      });
+    } catch {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "upload path invalid"));
+      return;
+    }
+    respond(true, { ok: true, agentId, workspace: workspaceDir, path: relPath }, undefined);
+  },
+  "agents.workspace.delete": async ({ params, respond }) => {
+    if (!validateAgentsWorkspaceDeleteParams(params)) {
+      respondInvalidMethodParams(respond, "agents.workspace.delete", validateAgentsWorkspaceDeleteParams.errors);
+      return;
+    }
+    const resolved = resolveAgentWorkspaceDirOrRespond(params, respond);
+    if (!resolved) {
+      return;
+    }
+    const { agentId, workspaceDir } = resolved;
+    const relPath = normalizeWorkspaceRelativePath(params.path);
+    if (!relPath || !isProjectScopedPath(relPath)) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "delete allowed only under project/"));
+      return;
+    }
+    const workspaceReal = await resolveWorkspaceRealPath(workspaceDir);
+    const absPath = path.resolve(workspaceReal, relPath);
+    try {
+      await assertNoPathAliasEscape({
+        absolutePath: absPath,
+        rootPath: workspaceReal,
+        boundaryLabel: "workspace root",
+      });
+      await fs.rm(absPath, { recursive: true, force: true });
+    } catch {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "delete path invalid"));
+      return;
+    }
+    respond(true, { ok: true, agentId, workspace: workspaceDir, path: relPath }, undefined);
   },
 };

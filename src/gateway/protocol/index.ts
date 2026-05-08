@@ -38,6 +38,24 @@ import {
   AgentsFilesSetParamsSchema,
   type AgentsFilesSetResult,
   AgentsFilesSetResultSchema,
+  type AgentsWorkspaceBrowseParams,
+  AgentsWorkspaceBrowseParamsSchema,
+  type AgentsWorkspaceBrowseResult,
+  AgentsWorkspaceBrowseResultSchema,
+  type AgentsWorkspaceDeleteParams,
+  AgentsWorkspaceDeleteParamsSchema,
+  type AgentsWorkspaceDeleteResult,
+  AgentsWorkspaceDeleteResultSchema,
+  type AgentsWorkspaceDownloadParams,
+  AgentsWorkspaceDownloadParamsSchema,
+  type AgentsWorkspaceDownloadResult,
+  AgentsWorkspaceDownloadResultSchema,
+  type AgentsWorkspaceEntry,
+  AgentsWorkspaceEntrySchema,
+  type AgentsWorkspaceUploadParams,
+  AgentsWorkspaceUploadParamsSchema,
+  type AgentsWorkspaceUploadResult,
+  AgentsWorkspaceUploadResultSchema,
   type AgentsListParams,
   AgentsListParamsSchema,
   type AgentsListResult,
@@ -328,6 +346,18 @@ export const validateAgentsFilesGetParams = ajv.compile<AgentsFilesGetParams>(
 );
 export const validateAgentsFilesSetParams = ajv.compile<AgentsFilesSetParams>(
   AgentsFilesSetParamsSchema,
+);
+export const validateAgentsWorkspaceBrowseParams = ajv.compile<AgentsWorkspaceBrowseParams>(
+  AgentsWorkspaceBrowseParamsSchema,
+);
+export const validateAgentsWorkspaceDownloadParams = ajv.compile<AgentsWorkspaceDownloadParams>(
+  AgentsWorkspaceDownloadParamsSchema,
+);
+export const validateAgentsWorkspaceUploadParams = ajv.compile<AgentsWorkspaceUploadParams>(
+  AgentsWorkspaceUploadParamsSchema,
+);
+export const validateAgentsWorkspaceDeleteParams = ajv.compile<AgentsWorkspaceDeleteParams>(
+  AgentsWorkspaceDeleteParamsSchema,
 );
 export const validateNodePairRequestParams = ajv.compile<NodePairRequestParams>(
   NodePairRequestParamsSchema,
@@ -633,6 +663,15 @@ export {
   AgentsFilesGetResultSchema,
   AgentsFilesSetParamsSchema,
   AgentsFilesSetResultSchema,
+  AgentsWorkspaceEntrySchema,
+  AgentsWorkspaceBrowseParamsSchema,
+  AgentsWorkspaceBrowseResultSchema,
+  AgentsWorkspaceDownloadParamsSchema,
+  AgentsWorkspaceDownloadResultSchema,
+  AgentsWorkspaceUploadParamsSchema,
+  AgentsWorkspaceUploadResultSchema,
+  AgentsWorkspaceDeleteParamsSchema,
+  AgentsWorkspaceDeleteResultSchema,
   AgentsListParamsSchema,
   AgentsListResultSchema,
   CommandsListParamsSchema,

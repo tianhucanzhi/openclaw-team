@@ -367,6 +367,44 @@ export type AgentsFilesSetResult = {
   file: AgentFileEntry;
 };
 
+export type WorkspaceEntry = {
+  name: string;
+  path: string;
+  kind: "file" | "directory";
+  size?: number;
+  updatedAtMs?: number;
+};
+
+export type AgentsWorkspaceBrowseResult = {
+  agentId: string;
+  workspace: string;
+  currentPath: string;
+  canWrite: boolean;
+  entries: WorkspaceEntry[];
+};
+
+export type AgentsWorkspaceDownloadResult = {
+  agentId: string;
+  workspace: string;
+  fileName: string;
+  path: string;
+  contentBase64: string;
+};
+
+export type AgentsWorkspaceUploadResult = {
+  ok: true;
+  agentId: string;
+  workspace: string;
+  path: string;
+};
+
+export type AgentsWorkspaceDeleteResult = {
+  ok: true;
+  agentId: string;
+  workspace: string;
+  path: string;
+};
+
 export type SessionRunStatus = "running" | "done" | "failed" | "killed" | "timeout";
 
 export type SessionCompactionCheckpointReason =
