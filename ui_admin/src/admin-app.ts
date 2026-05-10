@@ -408,6 +408,8 @@ export class OpenClawAdminApp extends LitElement {
   editModalError: string | null = null;
   /** Shown once after create/regenerate so admin can copy before navigating away. */
   highlightGatewayToken: string | null = null;
+  /** While on the employees page, refresh gateway status on an interval (browser `setInterval` id). */
+  private employeesGatewayPollTimer: number | undefined;
   /** Post-login sidebar section (extensible). */
   adminNav: "dashboard" | "employees" | "models" | "usage" | "skills" | "publicSkills" = "dashboard";
   modelsLoading = false;
@@ -1543,6 +1545,11 @@ export class OpenClawAdminApp extends LitElement {
     void this.refreshSession();
   }
 
+  disconnectedCallback(): void {
+    this.stopEmployeesGatewayPoll();
+    super.disconnectedCallback();
+  }
+
   private applyPortalLinkPrefsFromStorage(): void {
     const p = loadEmployeePortalLinkPrefs();
     this.portalLinkHost = p.host;
@@ -1573,14 +1580,36 @@ export class OpenClawAdminApp extends LitElement {
     }
   }
 
-  private async loadEmployees() {
-    this.listError = null;
+  private async loadEmployees(opts?: { silent?: boolean }) {
+    if (!opts?.silent) {
+      this.listError = null;
+    }
     const r = await api<{ employees: Employee[] }>("/api/employees");
     if (!r.ok) {
-      this.listError = r.error ?? "加载失败";
+      if (!opts?.silent) {
+        this.listError = r.error ?? "加载失败";
+      }
       return;
     }
     this.employees = r.data?.employees ?? [];
+  }
+
+  private startEmployeesGatewayPoll(): void {
+    this.stopEmployeesGatewayPoll();
+    this.employeesGatewayPollTimer = window.setInterval(() => {
+      if (this.session !== "admin" || this.adminNav !== "employees") {
+        this.stopEmployeesGatewayPoll();
+        return;
+      }
+      void this.loadEmployees({ silent: true });
+    }, 3000);
+  }
+
+  private stopEmployeesGatewayPoll(): void {
+    if (this.employeesGatewayPollTimer !== undefined) {
+      window.clearInterval(this.employeesGatewayPollTimer);
+      this.employeesGatewayPollTimer = undefined;
+    }
   }
 
   private async onLogin(e: Event) {
@@ -1603,6 +1632,7 @@ export class OpenClawAdminApp extends LitElement {
   }
 
   private async onLogout() {
+    this.stopEmployeesGatewayPoll();
     await api("/api/logout", { method: "POST" });
     this.session = "none";
     this.employees = [];
@@ -1778,6 +1808,67 @@ export class OpenClawAdminApp extends LitElement {
       this.listError = r.error ?? "停止失败";
       return;
     }
+    void this.loadEmployees();
+  }
+
+  private async startAllGateways() {
+    if (
+      !confirm(
+        "将为全部员工尝试启动网关：已在运行的跳过，其余逐个启动。确定？",
+      )
+    ) {
+      return;
+    }
+    this.busy = true;
+    this.listError = null;
+    this.formOk = null;
+    type BulkGwResult = {
+      id: string;
+      username: string;
+      ok: boolean;
+      skipped?: boolean;
+      error?: string;
+    };
+    const r = await api<{ ok: boolean; results: BulkGwResult[] }>(
+      "/api/employees/gateway/start-all",
+      { method: "POST" },
+    );
+    this.busy = false;
+    if (!r.ok) {
+      this.listError = r.error ?? "批量启动失败";
+      return;
+    }
+    const results = r.data?.results ?? [];
+    const failed = results.filter((x) => !x.ok);
+    if (failed.length > 0) {
+      this.listError = failed.map((f) => `${f.username}: ${f.error ?? "未知错误"}`).join("；");
+    }
+    const started = results.filter((x) => x.ok && !x.skipped).length;
+    const skipped = results.filter((x) => x.skipped).length;
+    this.formOk = `一键启动完成：新启动 ${started} 个，已运行跳过 ${skipped} 个，共 ${results.length} 名员工。`;
+    void this.loadEmployees();
+  }
+
+  private async stopAllGateways() {
+    if (!confirm("将停止全部员工的网关进程。确定？")) {
+      return;
+    }
+    this.busy = true;
+    this.listError = null;
+    this.formOk = null;
+    type BulkStopResult = { id: string; username: string; ok: boolean; stopped: boolean };
+    const r = await api<{ ok: boolean; results: BulkStopResult[] }>(
+      "/api/employees/gateway/stop-all",
+      { method: "POST" },
+    );
+    this.busy = false;
+    if (!r.ok) {
+      this.listError = r.error ?? "批量停止失败";
+      return;
+    }
+    const results = r.data?.results ?? [];
+    const stoppedCount = results.filter((x) => x.stopped).length;
+    this.formOk = `一键关闭完成：已停止 ${stoppedCount} 个网关进程（${results.length} 名员工）。`;
     void this.loadEmployees();
   }
 
@@ -1968,6 +2059,12 @@ export class OpenClawAdminApp extends LitElement {
 
   private onSelectNav(nav: "dashboard" | "employees" | "models" | "usage" | "skills" | "publicSkills") {
     this.adminNav = nav;
+    if (nav === "employees") {
+      void this.loadEmployees();
+      this.startEmployeesGatewayPoll();
+    } else {
+      this.stopEmployeesGatewayPoll();
+    }
     if (nav === "dashboard") {
       void this.loadDashboardData();
     }
@@ -2911,6 +3008,23 @@ export class OpenClawAdminApp extends LitElement {
               @click=${this.syncMainModelsToAllEmployees}
             >
               从 main 同步模型到全部员工
+            </button>
+            <button
+              type="button"
+              ?disabled=${this.busy || this.employees.length === 0}
+              title="为每名员工启动网关（已在运行的跳过）"
+              @click=${this.startAllGateways}
+            >
+              一键启动全部网关
+            </button>
+            <button
+              type="button"
+              class="secondary"
+              ?disabled=${this.busy || this.employees.length === 0}
+              title="停止全部员工的网关进程"
+              @click=${this.stopAllGateways}
+            >
+              一键关闭全部网关
             </button>
           </div>
         </div>

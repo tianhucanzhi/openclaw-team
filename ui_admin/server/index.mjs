@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1170,6 +1171,49 @@ function stopGatewayFor(id) {
   gatewayByEmployeeId.delete(id);
 }
 
+/**
+ * Stop a gateway started from this admin UI, or best-effort kill anything listening on the
+ * employee port when we no longer have a child handle (e.g. admin server restarted).
+ * @param {{ id: string, port?: number }} emp
+ */
+function stopGatewayForEmployee(emp) {
+  const id = emp.id;
+  const port = Number(emp.port);
+  const row = gatewayByEmployeeId.get(id);
+  const hadTrackedChild = Boolean(row?.child);
+  stopGatewayFor(id);
+  if (!hadTrackedChild && Number.isInteger(port) && port >= 1 && port <= 65535) {
+    killProcessesOnTcpPort(port);
+  }
+}
+
+/**
+ * Best-effort: loopback TCP connect — if something accepts, the port is in use (likely gateway).
+ * @param {number} port
+ * @param {number} [timeoutMs]
+ * @returns {Promise<boolean>}
+ */
+function probeLoopbackPortOpen(port, timeoutMs = 500) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return Promise.resolve(false);
+  }
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ port, host: "127.0.0.1" });
+    const finish = (ok) => {
+      socket.removeAllListeners();
+      try {
+        socket.destroy();
+      } catch {
+        /* ignore */
+      }
+      resolve(ok);
+    };
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+    socket.setTimeout(timeoutMs, () => finish(false));
+  });
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1368,11 +1412,11 @@ async function startGatewayProcess(emp) {
   gatewayByEmployeeId.set(id, { child });
 }
 
-function attachGatewayStatus(employees) {
-  return employees.map((e) => {
+async function attachGatewayStatus(employees) {
+  const mapped = employees.map((e) => {
     const row = gatewayByEmployeeId.get(e.id);
     const child = row?.child;
-    const running = Boolean(child && child.exitCode === null);
+    const trackedAlive = Boolean(child && child.exitCode === null);
     const gatewayToken = typeof e.gatewayToken === "string" && e.gatewayToken.trim() ? e.gatewayToken : null;
     const workspaceWritePath =
       typeof e.workspaceWritePath === "string" && e.workspaceWritePath.trim()
@@ -1384,18 +1428,44 @@ function attachGatewayStatus(employees) {
         : null;
     const tightenWorkspaceScope = employeeTightensWorkspaceScope(e);
     return {
-      id: e.id,
-      username: e.username,
-      port: e.port,
-      createdAt: e.createdAt,
-      gatewayRunning: running,
-      gatewayPid: running && child?.pid ? child.pid : null,
+      e,
+      child,
+      trackedAlive,
       gatewayToken,
-      tightenWorkspaceScope,
       workspaceWritePath,
       workspaceReadPath,
+      tightenWorkspaceScope,
     };
   });
+
+  const inferredListen = await Promise.all(
+    mapped.map(({ e, trackedAlive }) =>
+      trackedAlive ? Promise.resolve(false) : probeLoopbackPortOpen(Number(e.port)),
+    ),
+  );
+
+  return mapped.map(
+    (
+      { e, child, trackedAlive, gatewayToken, workspaceWritePath, workspaceReadPath, tightenWorkspaceScope },
+      i,
+    ) => {
+      const gatewayRunning = trackedAlive || inferredListen[i];
+      const gatewayPid =
+        gatewayRunning && trackedAlive && child?.pid ? child.pid : null;
+      return {
+        id: e.id,
+        username: e.username,
+        port: e.port,
+        createdAt: e.createdAt,
+        gatewayRunning,
+        gatewayPid,
+        gatewayToken,
+        tightenWorkspaceScope,
+        workspaceWritePath,
+        workspaceReadPath,
+      };
+    },
+  );
 }
 
 function guessMime(filePath) {
@@ -1783,7 +1853,7 @@ const server = http.createServer(async (req, res) => {
 
       if (method === "GET" && pathname === "/api/employees") {
         const store = loadStore();
-        json(res, 200, { employees: attachGatewayStatus(store.employees) });
+        json(res, 200, { employees: await attachGatewayStatus(store.employees) });
         return;
       }
 
@@ -1806,10 +1876,15 @@ const server = http.createServer(async (req, res) => {
         /** @type {Array<{ id: string; username: string; ok: boolean; error?: string; restarted?: boolean }>} */
         const results = [];
         for (const emp of list) {
-          const wasRunning = gatewayByEmployeeId.has(emp.id);
+          const hadTracked = gatewayByEmployeeId.has(emp.id);
+          let portListening = false;
+          if (!hadTracked) {
+            portListening = await probeLoopbackPortOpen(Number(emp.port));
+          }
+          const wasRunning = hadTracked || portListening;
           try {
             if (wasRunning) {
-              stopGatewayFor(emp.id);
+              stopGatewayForEmployee(emp);
             }
             await writeEmployeeGatewayConfig(emp, {
               mergeIntoExisting: true,
@@ -1833,6 +1908,62 @@ const server = http.createServer(async (req, res) => {
               error: String(err?.message ?? err),
             });
           }
+        }
+        json(res, 200, { ok: true, results });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/employees/gateway/start-all") {
+        const store = loadStore();
+        if (!existsSync(OPENCLAW_ENTRY)) {
+          json(res, 500, { error: "未找到 OpenClaw 入口（dist/entry）。" });
+          return;
+        }
+        /** @type {Array<{ id: string; username: string; ok: boolean; skipped?: boolean; error?: string }>} */
+        const results = [];
+        for (const emp of store.employees.filter(Boolean)) {
+          if (gatewayByEmployeeId.has(emp.id)) {
+            results.push({
+              id: emp.id,
+              username: emp.username,
+              ok: true,
+              skipped: true,
+            });
+            continue;
+          }
+          try {
+            await startGatewayProcess(emp);
+            results.push({ id: emp.id, username: emp.username, ok: true });
+          } catch (err) {
+            results.push({
+              id: emp.id,
+              username: emp.username,
+              ok: false,
+              error: String(err?.message ?? err),
+            });
+          }
+        }
+        json(res, 200, { ok: true, results });
+        return;
+      }
+
+      if (method === "POST" && pathname === "/api/employees/gateway/stop-all") {
+        const store = loadStore();
+        /** @type {Array<{ id: string; username: string; ok: boolean; stopped: boolean }>} */
+        const results = [];
+        for (const emp of store.employees.filter(Boolean)) {
+          const hadTracked = gatewayByEmployeeId.has(emp.id);
+          let portListening = false;
+          if (!hadTracked) {
+            portListening = await probeLoopbackPortOpen(Number(emp.port));
+          }
+          stopGatewayForEmployee(emp);
+          results.push({
+            id: emp.id,
+            username: emp.username,
+            ok: true,
+            stopped: hadTracked || portListening,
+          });
         }
         json(res, 200, { ok: true, results });
         return;
@@ -1907,7 +2038,7 @@ const server = http.createServer(async (req, res) => {
         }
 
         json(res, 200, {
-          employee: attachGatewayStatus([emp])[0],
+          employee: (await attachGatewayStatus([emp]))[0],
           gatewayStarted,
           gatewayToken,
         });
@@ -1940,6 +2071,10 @@ const server = http.createServer(async (req, res) => {
               json(res, 400, { error: "请先停止网关再修改端口。" });
               return;
             }
+            if (await probeLoopbackPortOpen(Number(emp.port))) {
+              json(res, 400, { error: "请先停止网关再修改端口。" });
+              return;
+            }
             emp.port = newPort;
           }
         }
@@ -1955,9 +2090,14 @@ const server = http.createServer(async (req, res) => {
           }
         }
         saveStore(store);
-        const wasRunning = gatewayByEmployeeId.has(id);
+        const hadTracked = gatewayByEmployeeId.has(id);
+        let portListening = false;
+        if (!hadTracked) {
+          portListening = await probeLoopbackPortOpen(Number(emp.port));
+        }
+        const wasRunning = hadTracked || portListening;
         if (wasRunning) {
-          stopGatewayFor(id);
+          stopGatewayForEmployee(emp);
         }
         try {
           await writeEmployeeGatewayConfig(emp, { mergeIntoExisting: true, inheritMainModels: false });
@@ -1973,7 +2113,7 @@ const server = http.createServer(async (req, res) => {
             return;
           }
         }
-        json(res, 200, { employee: attachGatewayStatus([emp])[0] });
+        json(res, 200, { employee: (await attachGatewayStatus([emp]))[0] });
         return;
       }
 
@@ -1987,7 +2127,11 @@ const server = http.createServer(async (req, res) => {
           json(res, 404, { error: "not found" });
           return;
         }
-        stopGatewayFor(id);
+        if (existing) {
+          stopGatewayForEmployee(existing);
+        } else {
+          stopGatewayFor(id);
+        }
         await removeDirWithRetry(employeeDir(existing ?? id));
         store.employees = next;
         saveStore(store);
@@ -2008,9 +2152,14 @@ const server = http.createServer(async (req, res) => {
         emp.gatewayToken = nextToken;
         saveStore(store);
         await writeEmployeeGatewayConfig(emp, { mergeIntoExisting: true });
-        const wasRunning = gatewayByEmployeeId.has(id);
+        const hadTracked = gatewayByEmployeeId.has(id);
+        let portListening = false;
+        if (!hadTracked) {
+          portListening = await probeLoopbackPortOpen(Number(emp.port));
+        }
+        const wasRunning = hadTracked || portListening;
         if (wasRunning) {
-          stopGatewayFor(id);
+          stopGatewayForEmployee(emp);
           try {
             await startGatewayProcess(emp);
           } catch (err) {
@@ -2052,11 +2201,12 @@ const server = http.createServer(async (req, res) => {
       if (method === "POST" && stopMatch) {
         const id = stopMatch[1];
         const store = loadStore();
-        if (!store.employees.some((e) => e.id === id)) {
+        const emp = store.employees.find((e) => e.id === id);
+        if (!emp) {
           json(res, 404, { error: "not found" });
           return;
         }
-        stopGatewayFor(id);
+        stopGatewayForEmployee(emp);
         json(res, 200, { ok: true });
         return;
       }
@@ -2123,7 +2273,7 @@ const server = http.createServer(async (req, res) => {
           includeContextWeight: false,
         };
         const store = loadStore();
-        const withStatus = attachGatewayStatus(store.employees);
+        const withStatus = await attachGatewayStatus(store.employees);
         const employees = await Promise.all(
           withStatus.map(async (emp) => {
             const base = {

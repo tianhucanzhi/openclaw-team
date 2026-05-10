@@ -224,7 +224,7 @@ export async function fetchSkillsStatusWithRetry(spawnOpenclawGatewayCall, param
  * @param {URL} url
  * @param {{
  *   loadStore: () => { employees: unknown[] },
- *   attachGatewayStatus: (employees: unknown[]) => unknown[],
+ *   attachGatewayStatus: (employees: unknown[]) => Promise<unknown[]>,
  *   spawnOpenclawGatewayCall: (
  *     method: string,
  *     params: unknown,
@@ -239,7 +239,7 @@ export async function respondEmployeesSkillsMonitoring(url, ctx) {
   const agentId = String(url.searchParams.get("agentId") ?? "main").trim() || "main";
   const callParams = { agentId };
   const store = loadStore();
-  const withStatus = attachGatewayStatus(store.employees);
+  const withStatus = await attachGatewayStatus(store.employees);
   const employees = await Promise.all(
     withStatus.map(async (emp) => {
       const base = {
