@@ -212,6 +212,7 @@ export const en: TranslationMap = {
     delete: "Delete",
     deleting: "Deleting...",
     download: "Download",
+    downloading: "Downloading...",
     directory: "Directory",
     file: "File",
     columns: {

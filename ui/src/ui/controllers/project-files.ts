@@ -15,6 +15,7 @@ export type ProjectFilesState = {
   projectFilesCurrentPath: string;
   projectFilesUploading: boolean;
   projectFilesDeletingPath: string | null;
+  projectFilesDownloadingPath: string | null;
 };
 
 export async function loadProjectFiles(state: ProjectFilesState, agentId: string, path = "") {
@@ -40,30 +41,38 @@ export async function loadProjectFiles(state: ProjectFilesState, agentId: string
 }
 
 export async function downloadWorkspaceFile(state: ProjectFilesState, agentId: string, path: string) {
-  if (!state.client || !state.connected) {
+  if (!state.client || !state.connected || state.projectFilesDownloadingPath) {
     return;
   }
-  const res = await state.client.request<AgentsWorkspaceDownloadResult | null>("agents.workspace.download", {
-    agentId,
-    path,
-  });
-  if (!res?.contentBase64) {
-    return;
+  state.projectFilesDownloadingPath = path;
+  state.projectFilesError = null;
+  try {
+    const res = await state.client.request<AgentsWorkspaceDownloadResult | null>("agents.workspace.download", {
+      agentId,
+      path,
+    });
+    if (!res?.contentBase64) {
+      return;
+    }
+    const binary = atob(res.contentBase64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const blob = new Blob([bytes]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = res.fileName || "download.bin";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    state.projectFilesError = String(err);
+  } finally {
+    state.projectFilesDownloadingPath = null;
   }
-  const binary = atob(res.contentBase64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  const blob = new Blob([bytes]);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = res.fileName || "download.bin";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
 }
 
 export async function uploadProjectFile(

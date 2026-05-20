@@ -209,6 +209,7 @@ export const zh_CN: TranslationMap = {
     delete: "删除",
     deleting: "删除中...",
     download: "下载",
+    downloading: "下载中...",
     directory: "目录",
     file: "文件",
     columns: {

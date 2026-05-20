@@ -12,6 +12,7 @@ type ProjectFilesViewProps = {
   entries: WorkspaceEntry[];
   uploading: boolean;
   deletingPath: string | null;
+  downloadingPath: string | null;
   onOpenPath: (path: string) => void;
   onGoUp: () => void;
   onDownload: (path: string) => void;
@@ -223,18 +224,19 @@ export function renderProjectFiles(props: ProjectFilesViewProps) {
                               ${entry.updatedAtMs ? new Date(entry.updatedAtMs).toLocaleString() : "—"}
                             </td>
                             <td class="project-files__actions">
-                              ${entry.kind === "file"
-                                ? html`<button
+                              ${html`<button
                                     type="button"
                                     class="btn btn--subtle btn--sm project-files__action-btn"
+                                    ?disabled=${props.downloadingPath === entry.path}
                                     @click=${() => props.onDownload(entry.path)}
                                   >
                                     <span class="project-files__btn-icon" aria-hidden="true"
                                       >${icons.download}</span
                                     >
-                                    ${t("projectFiles.download")}
-                                  </button>`
-                                : null}
+                                    ${props.downloadingPath === entry.path
+                                      ? t("projectFiles.downloading")
+                                      : t("projectFiles.download")}
+                                  </button>`}
                               ${entry.path.toLowerCase().startsWith("project/")
                                 ? html`<button
                                     type="button"

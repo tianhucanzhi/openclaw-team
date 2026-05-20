@@ -219,6 +219,7 @@ export type AppViewState = {
   projectFilesCurrentPath: string;
   projectFilesUploading: boolean;
   projectFilesDeletingPath: string | null;
+  projectFilesDownloadingPath: string | null;
   agentIdentityLoading: boolean;
   agentIdentityError: string | null;
   agentIdentityById: Record<string, AgentIdentityResult>;

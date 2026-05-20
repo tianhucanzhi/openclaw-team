@@ -324,6 +324,7 @@ export class OpenClawApp extends LitElement {
   @state() projectFilesCurrentPath = "";
   @state() projectFilesUploading = false;
   @state() projectFilesDeletingPath: string | null = null;
+  @state() projectFilesDownloadingPath: string | null = null;
   @state() agentIdentityLoading = false;
   @state() agentIdentityError: string | null = null;
   @state() agentIdentityById: Record<string, AgentIdentityResult> = {};

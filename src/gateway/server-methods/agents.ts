@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import JSZip from "jszip";
 import {
   listAgentIds,
   resolveAgentDir,
@@ -312,6 +313,123 @@ function normalizeWorkspaceRelativePath(rawPath: unknown): string {
 function isProjectScopedPath(relPath: string): boolean {
   const lower = relPath.toLowerCase();
   return lower === "project" || lower.startsWith("project/");
+}
+
+const WORKSPACE_DOWNLOAD_MAX_FILES = 10_000;
+const WORKSPACE_DOWNLOAD_MAX_BYTES = 100 * 1024 * 1024;
+
+type WorkspaceDownloadTarget =
+  | { kind: "file"; ioPath: string }
+  | { kind: "directory"; dirPath: string }
+  | { kind: "invalid"; reason: string };
+
+async function resolveWorkspaceDownloadTarget(params: {
+  workspaceDir: string;
+  relPath: string;
+}): Promise<WorkspaceDownloadTarget> {
+  const workspaceReal = await resolveWorkspaceRealPath(params.workspaceDir);
+  const targetPath = path.resolve(workspaceReal, params.relPath);
+  try {
+    await assertNoPathAliasEscape({
+      absolutePath: targetPath,
+      rootPath: workspaceReal,
+      boundaryLabel: "workspace root",
+    });
+  } catch {
+    return { kind: "invalid", reason: "path escapes workspace root" };
+  }
+  let stat: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    stat = await fs.stat(targetPath);
+  } catch {
+    return { kind: "invalid", reason: "path not found" };
+  }
+  if (stat.isDirectory()) {
+    return { kind: "directory", dirPath: targetPath };
+  }
+  if (!stat.isFile()) {
+    return { kind: "invalid", reason: "path is not a file or directory" };
+  }
+  const pathResolved = await resolveAgentWorkspaceFilePath({
+    workspaceDir: params.workspaceDir,
+    name: params.relPath,
+    allowMissing: false,
+  });
+  if (pathResolved.kind !== "ready") {
+    return { kind: "invalid", reason: "file path invalid" };
+  }
+  return { kind: "file", ioPath: pathResolved.ioPath };
+}
+
+async function zipWorkspaceDirectory(params: {
+  dirPath: string;
+  workspaceReal: string;
+  zipRootName: string;
+}): Promise<Buffer> {
+  const zip = new JSZip();
+  const root = zip.folder(params.zipRootName);
+  if (!root) {
+    throw new Error("zip root folder failed");
+  }
+  let fileCount = 0;
+  let totalBytes = 0;
+
+  const walk = async (absDir: string, zipPrefix: string) => {
+    let rows: Awaited<ReturnType<typeof fs.readdir>>;
+    try {
+      rows = await fs.readdir(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of rows) {
+      if (entry.name.startsWith(".")) {
+        continue;
+      }
+      const abs = path.join(absDir, entry.name);
+      try {
+        await assertNoPathAliasEscape({
+          absolutePath: abs,
+          rootPath: params.workspaceReal,
+          boundaryLabel: "workspace root",
+        });
+      } catch {
+        continue;
+      }
+      const zipPath = zipPrefix ? `${zipPrefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(abs, zipPath);
+        continue;
+      }
+      if (!entry.isFile()) {
+        continue;
+      }
+      let lstat: Awaited<ReturnType<typeof fs.lstat>>;
+      try {
+        lstat = await fs.lstat(abs);
+      } catch {
+        continue;
+      }
+      if (lstat.isSymbolicLink() || !lstat.isFile() || lstat.nlink > 1) {
+        continue;
+      }
+      fileCount += 1;
+      if (fileCount > WORKSPACE_DOWNLOAD_MAX_FILES) {
+        throw new Error("folder file count exceeds limit");
+      }
+      totalBytes += lstat.size;
+      if (totalBytes > WORKSPACE_DOWNLOAD_MAX_BYTES) {
+        throw new Error("folder total size exceeds limit");
+      }
+      if (lstat.size > WORKSPACE_DOWNLOAD_MAX_BYTES) {
+        throw new Error("single file size exceeds limit");
+      }
+      const content = await fs.readFile(abs);
+      root.file(zipPath, content);
+    }
+  };
+
+  await walk(params.dirPath, "");
+  return await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
 }
 
 function resolveAgentWorkspaceDirOrRespond(
@@ -1107,30 +1225,52 @@ export const agentsHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "file path required"));
       return;
     }
-    const pathResolved = await resolveAgentWorkspaceFilePath({
-      workspaceDir,
-      name: relPath,
-      allowMissing: false,
-    });
-    if (pathResolved.kind !== "ready") {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "file path invalid"));
+    const target = await resolveWorkspaceDownloadTarget({ workspaceDir, relPath });
+    if (target.kind === "invalid") {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "download path invalid"));
       return;
     }
     try {
-      const content = await fs.readFile(pathResolved.ioPath);
+      if (target.kind === "file") {
+        const content = await fs.readFile(target.ioPath);
+        respond(
+          true,
+          {
+            agentId,
+            workspace: workspaceDir,
+            fileName: path.basename(relPath),
+            path: relPath,
+            contentBase64: content.toString("base64"),
+          },
+          undefined,
+        );
+        return;
+      }
+      const workspaceReal = await resolveWorkspaceRealPath(workspaceDir);
+      const zipRootName = path.basename(relPath) || "folder";
+      const zipBuffer = await zipWorkspaceDirectory({
+        dirPath: target.dirPath,
+        workspaceReal,
+        zipRootName,
+      });
       respond(
         true,
         {
           agentId,
           workspace: workspaceDir,
-          fileName: path.basename(relPath),
+          fileName: `${zipRootName}.zip`,
           path: relPath,
-          contentBase64: content.toString("base64"),
+          contentBase64: zipBuffer.toString("base64"),
         },
         undefined,
       );
-    } catch {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "file read failed"));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      if (message.includes("exceeds limit")) {
+        respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "folder too large to download"));
+        return;
+      }
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "download failed"));
     }
   },
   "agents.workspace.upload": async ({ params, respond }) => {

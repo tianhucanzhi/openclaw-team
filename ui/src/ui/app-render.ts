@@ -1642,6 +1642,7 @@ export function renderApp(state: AppViewState) {
               entries: state.projectFilesList?.entries ?? [],
               uploading: state.projectFilesUploading,
               deletingPath: state.projectFilesDeletingPath,
+              downloadingPath: state.projectFilesDownloadingPath,
               onOpenPath: (nextPath) => {
                 state.projectFilesCurrentPath = nextPath;
                 void loadProjectFiles(state, state.agentsList?.defaultId ?? "main", nextPath);
